@@ -69,6 +69,15 @@ pub enum RunnerError {
     Spawn(String),
     /// Reading the child output failed.
     Io(String),
+    /// No `ModelClaimed` entry exists at the requested ledger sequence (or it
+    /// is not a claim for this task).
+    ClaimNotFound(u64),
+    /// The tool ran but exited non-zero; nothing was promoted or appended.
+    ToolFailed { exit_code: i32, stderr: String },
+    /// The tri-state promotion was rejected by the state machine.
+    Promote(String),
+    /// A ledger read / integrity / append operation failed.
+    Ledger(String),
 }
 
 /// The v1 allowlist. Add more tools here as the project grows.

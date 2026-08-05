@@ -434,6 +434,12 @@ dependencies = [
 [[package]]
 name = "pf-toolrunner"
 version = "0.1.0"
+dependencies = [
+ "pf-core",
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "pin-project-lite"
