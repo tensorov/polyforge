@@ -1,6 +1,9 @@
 //! pf-toolrunner: PolyForge tool execution.
 //!
-//! This crate will implement the allowlist + typed-args tool runner with
-//! no-shell spawning and per-command environment fingerprinting. For now it is
-//! an empty skeleton — real logic lands in later todos.
-// T1 skeleton
+//! Allowlist + typed-args tool runner with no-shell spawning and per-command
+//! environment fingerprinting. Evidence becomes `Verified` only through an
+//! allowlisted tool run (see [`runner`]).
+
+pub mod runner;
+
+pub use runner::{RunOutput, RunnerError, Tool, allowlist, env_fingerprint, lookup, run, spawn};
