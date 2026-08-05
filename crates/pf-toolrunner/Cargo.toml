@@ -1,0 +1,9 @@
+[package]
+name = "pf-toolrunner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "pf_toolrunner"
+path = "src/lib.rs"

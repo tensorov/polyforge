@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pf-core",
+    "crates/pf-toolrunner",
+    "crates/pf-mcp",
+    "crates/pf-cli",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+rust-version = "1.85"

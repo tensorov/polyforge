@@ -1,0 +1,9 @@
+[package]
+name = "pf-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "pf_core"
+path = "src/lib.rs"
