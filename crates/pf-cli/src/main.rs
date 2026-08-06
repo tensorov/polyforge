@@ -94,7 +94,7 @@ fn cmd_append(
     diff: Option<&str>,
 ) -> Result<(), String> {
     parse_kind(kind)?;
-    let mut ledger = Ledger::new(&ledger_path());
+    let mut ledger = Ledger::new(ledger_path());
 
     let entry = match kind {
         "model_claim" => {
@@ -245,7 +245,7 @@ fn latest_state_of_state(
 }
 
 fn cmd_ledger_tail() -> Result<(), String> {
-    let ledger = Ledger::new(&ledger_path());
+    let ledger = Ledger::new(ledger_path());
     let state = ledger
         .verify_chain()
         .map_err(|e| format!("verify chain: {e:?}"))?;
@@ -276,7 +276,7 @@ fn parse_required(spec: &str) -> Result<Vec<EvidenceState>, String> {
 
 /// Collect this task's ledger entries, sorted by seq (insertion order).
 fn task_entries(task_id: &str) -> Result<Vec<LedgerEntry>, String> {
-    let ledger = Ledger::new(&ledger_path());
+    let ledger = Ledger::new(ledger_path());
     let entries = ledger
         .iter_entries()
         .map_err(|e| format!("iter entries: {e:?}"))?;
@@ -342,7 +342,7 @@ fn write_fail_manifest(task_id: &str, eval: &Evaluation) -> Result<(), String> {
 }
 
 fn cmd_gate(task_id: &str, required: &[EvidenceState]) -> Result<ExitCode, String> {
-    let ledger = Ledger::new(&ledger_path());
+    let ledger = Ledger::new(ledger_path());
     let eval = match evaluate_complete(&ledger, task_id, required) {
         Ok(e) => e,
         Err(GateError::TaskNotFound { .. }) => {
