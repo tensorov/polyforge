@@ -113,6 +113,8 @@ impl EvidenceEntry {
 
     /// Toolrunner-supplied attestation: always `Verified`. Requires the
     /// tool fields; the model cannot call this.
+    // Pure data constructor mirroring the 9-field EvidenceEntry record; callers stay unchanged.
+    #[allow(clippy::too_many_arguments)]
     pub fn tool_attestation(
         task_id: impl Into<String>,
         commit_sha: impl Into<String>,
