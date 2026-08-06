@@ -4,7 +4,7 @@
 //! No external MCP registry / network required — everything runs over the
 //! child process's stdin/stdout.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ fn server_info() -> ServerInfo {
 
 /// Spawn the real server binary with a fresh ledger and return the child plus
 /// a connected rmcp client over its stdio.
-async fn spawn_server(ledger: &PathBuf) -> (Child, RunningService<RoleClient, TestClient>) {
+async fn spawn_server(ledger: &Path) -> (Child, RunningService<RoleClient, TestClient>) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_pf-mcp"))
         .env("PF_MCP_LEDGER", ledger.as_os_str())
         .kill_on_drop(true)
@@ -163,7 +163,7 @@ async fn test_army_smoke_full_flow() {
     assert_eq!(report["task_id"], "task-8-army-smoke");
     assert_eq!(report["passed"], true);
     assert!(!report["bundle_sha256"].as_str().unwrap().is_empty());
-    assert!(report["entries"].as_array().unwrap().len() >= 1);
+    assert!(!report["entries"].as_array().unwrap().is_empty());
 
     teardown(&mut child).await;
 }

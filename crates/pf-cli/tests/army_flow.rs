@@ -160,8 +160,8 @@ fn test_army_full_loop() {
         &pf(&env, &["gate", "T11", "--required", "verified"]),
         "pf gate T11 --required verified (second run)",
     );
-    let bundle_first = std::fs::read(&env.bundle("T11")).unwrap();
-    let bundle_second = std::fs::read(&env.bundle("T11")).unwrap();
+    let bundle_first = std::fs::read(env.bundle("T11")).unwrap();
+    let bundle_second = std::fs::read(env.bundle("T11")).unwrap();
     assert_eq!(
         bundle_first, bundle_second,
         "bundle .jsonl must be byte-identical across runs"

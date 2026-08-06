@@ -195,7 +195,7 @@ fn test_bundle_reproducible() {
         &pf(&env, &["gate", "T3", "--required", "verified"]),
         "first gate run",
     );
-    let bundle_first = std::fs::read(&env.bundle("T3")).unwrap();
+    let bundle_first = std::fs::read(env.bundle("T3")).unwrap();
     let manifest_first = read_json(&env.manifest("T3"));
     let sha_first = manifest_first["bundle_sha256"]
         .as_str()
@@ -206,7 +206,7 @@ fn test_bundle_reproducible() {
         &pf(&env, &["gate", "T3", "--required", "verified"]),
         "second gate run",
     );
-    let bundle_second = std::fs::read(&env.bundle("T3")).unwrap();
+    let bundle_second = std::fs::read(env.bundle("T3")).unwrap();
     let manifest_second = read_json(&env.manifest("T3"));
     let sha_second = manifest_second["bundle_sha256"]
         .as_str()
@@ -249,7 +249,7 @@ fn test_bundle_snapshot_matches_ledger() {
     );
 
     // bundle .jsonl == the ledger entries for that task (subset, in seq order)
-    let bundle = std::fs::read_to_string(&env.bundle("T4")).unwrap();
+    let bundle = std::fs::read_to_string(env.bundle("T4")).unwrap();
     let bundle_lines: Vec<&str> = bundle.lines().filter(|l| !l.trim().is_empty()).collect();
     let ledger_lines = ledger_lines_for_task(&env, "T4");
     assert_eq!(
