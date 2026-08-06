@@ -5,5 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rmcp = "3"
+pf-core = { path = "../pf-core" }
+pf-toolrunner = { path = "../pf-toolrunner" }
+rmcp = { version = "3", features = ["transport-io", "client"] }
+schemars = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+anyhow = "1"
