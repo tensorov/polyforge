@@ -218,10 +218,13 @@ pub enum EvidenceError {
 /// * `Verified` -> `Validated` via a [`EvidenceKind::Validation`].
 ///
 /// `ModelClaimed` -> `Validated` directly is rejected.
-pub fn promote(entry: &EvidenceEntry, attestation: &EvidenceEntry) -> Result<EvidenceEntry, EvidenceError> {
+pub fn promote(
+    entry: &EvidenceEntry,
+    attestation: &EvidenceEntry,
+) -> Result<EvidenceEntry, EvidenceError> {
     match (entry.state, attestation.kind) {
-        (EvidenceState::ModelClaimed, EvidenceKind::ToolAttestation) => Ok(
-            EvidenceEntry::tool_attestation(
+        (EvidenceState::ModelClaimed, EvidenceKind::ToolAttestation) => {
+            Ok(EvidenceEntry::tool_attestation(
                 entry.task_id.clone(),
                 entry.commit_sha.clone(),
                 entry.diff_hash.clone(),
@@ -231,18 +234,16 @@ pub fn promote(entry: &EvidenceEntry, attestation: &EvidenceEntry) -> Result<Evi
                 attestation.exit_code,
                 attestation.stdout_hash.clone(),
                 attestation.ts.clone(),
-            ),
-        ),
-        (EvidenceState::Verified, EvidenceKind::Validation) => Ok(
-            EvidenceEntry::validation(
-                entry.task_id.clone(),
-                entry.commit_sha.clone(),
-                entry.diff_hash.clone(),
-                attestation.validator.clone(),
-                attestation.rationale.clone(),
-                attestation.ts.clone(),
-            ),
-        ),
+            ))
+        }
+        (EvidenceState::Verified, EvidenceKind::Validation) => Ok(EvidenceEntry::validation(
+            entry.task_id.clone(),
+            entry.commit_sha.clone(),
+            entry.diff_hash.clone(),
+            attestation.validator.clone(),
+            attestation.rationale.clone(),
+            attestation.ts.clone(),
+        )),
         (from, via) => Err(EvidenceError::InvalidPromotion { from, via }),
     }
 }
@@ -258,7 +259,15 @@ mod tests {
 
     fn attestation() -> EvidenceEntry {
         EvidenceEntry::tool_attestation(
-            "T3", "abc123", "diff-1", "cargo-1.95.0", "env-x", "cargo test", 0, "h1", "ts-2",
+            "T3",
+            "abc123",
+            "diff-1",
+            "cargo-1.95.0",
+            "env-x",
+            "cargo test",
+            0,
+            "h1",
+            "ts-2",
         )
     }
 

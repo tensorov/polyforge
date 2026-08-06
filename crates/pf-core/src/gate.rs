@@ -89,7 +89,11 @@ pub enum GateError {
 impl fmt::Display for GateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GateError::LedgerIntegrity { seq, expected, found } => write!(
+            GateError::LedgerIntegrity {
+                seq,
+                expected,
+                found,
+            } => write!(
                 f,
                 "ledger integrity broken at seq {seq}: expected {expected}, found {found}"
             ),
@@ -109,9 +113,15 @@ impl From<LedgerError> for GateError {
         match e {
             LedgerError::Io(msg) => GateError::Io(msg),
             LedgerError::Json(msg) => GateError::Json(msg),
-            LedgerError::ChainBroken { seq, expected, found } => {
-                GateError::LedgerIntegrity { seq, expected, found }
-            }
+            LedgerError::ChainBroken {
+                seq,
+                expected,
+                found,
+            } => GateError::LedgerIntegrity {
+                seq,
+                expected,
+                found,
+            },
             LedgerError::EmptyChain => GateError::LedgerIntegrity {
                 seq: 0,
                 expected: "<genesis entry>".to_string(),
@@ -137,8 +147,12 @@ pub fn evaluate_complete(
 
     let mut counts = Counts::zero();
     for entry in &entries {
-        let Some(state) = state_of(entry) else { continue };
-        let Some(entry_task) = task_of(entry) else { continue };
+        let Some(state) = state_of(entry) else {
+            continue;
+        };
+        let Some(entry_task) = task_of(entry) else {
+            continue;
+        };
         if entry_task != task_id {
             continue;
         }
@@ -209,7 +223,15 @@ mod tests {
 
     fn attestation(task: &str) -> TriState {
         TriState::tool_attestation(
-            task, "abc123", "diff-1", "cargo-1.95.0", "env-x", "cargo test", 0, "h1", "ts-2",
+            task,
+            "abc123",
+            "diff-1",
+            "cargo-1.95.0",
+            "env-x",
+            "cargo test",
+            0,
+            "h1",
+            "ts-2",
         )
     }
 
@@ -237,7 +259,10 @@ mod tests {
         // Claim + Verified, requiring Verified -> passes.
         let ledger = ledger_with("T4", false);
         let eval = evaluate_complete(&ledger, "T4", &[EvidenceState::Verified]).unwrap();
-        assert!(eval.passed, "Verified evidence must satisfy a Verified gate");
+        assert!(
+            eval.passed,
+            "Verified evidence must satisfy a Verified gate"
+        );
         assert!(eval.missing.is_empty());
         assert_eq!(eval.counts.claimed, 1);
         assert_eq!(eval.counts.verified, 1);
@@ -245,7 +270,10 @@ mod tests {
 
         // Same ledger, but requiring Validated (only Verified present) -> fails.
         let eval = evaluate_complete(&ledger, "T4", &[EvidenceState::Validated]).unwrap();
-        assert!(!eval.passed, "Validated gate must not pass on Verified-only evidence");
+        assert!(
+            !eval.passed,
+            "Validated gate must not pass on Verified-only evidence"
+        );
         assert_eq!(eval.missing, vec!["Validated"]);
 
         // A claim alone is never enough for a Verified gate.
@@ -253,7 +281,10 @@ mod tests {
         let mut claim_only = Ledger::new(&path);
         claim_only.append(claim("T4").to_ledger_entry()).unwrap();
         let eval = evaluate_complete(&claim_only, "T4", &[EvidenceState::Verified]).unwrap();
-        assert!(!eval.passed, "ModelClaimed alone must never satisfy a Verified gate");
+        assert!(
+            !eval.passed,
+            "ModelClaimed alone must never satisfy a Verified gate"
+        );
         assert_eq!(eval.missing, vec!["Verified"]);
         assert_eq!(eval.counts.claimed, 1);
         assert_eq!(eval.counts.verified, 0);
@@ -308,7 +339,10 @@ mod tests {
         // Two independently-built identical ledgers -> identical Evaluation.
         let other = ledger_with("T4", true);
         let c = evaluate_complete(&other, "T4", &[EvidenceState::Verified]).unwrap();
-        assert_eq!(a, c, "same evidence sequence must yield the same gate verdict");
+        assert_eq!(
+            a, c,
+            "same evidence sequence must yield the same gate verdict"
+        );
     }
 
     #[test]
@@ -318,6 +352,9 @@ mod tests {
         let eval = evaluate_complete(&ledger, "T4", &[EvidenceState::Verified]).unwrap();
         assert_eq!(eval.chain_tail_hash, chain.head_hash);
         assert_eq!(eval.chain_tail_hash.len(), 64);
-        assert!(eval.chain_tail_hash.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert!(eval
+            .chain_tail_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit()));
     }
 }

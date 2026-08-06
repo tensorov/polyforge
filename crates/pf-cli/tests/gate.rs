@@ -73,7 +73,17 @@ fn seed_verified(env: &Env, task: &str) {
     assert_ok(
         &pf(
             env,
-            &["append", "model_claim", "claim-datum", "--task", task, "--commit", "abc123", "--diff", "d1"],
+            &[
+                "append",
+                "model_claim",
+                "claim-datum",
+                "--task",
+                task,
+                "--commit",
+                "abc123",
+                "--diff",
+                "d1",
+            ],
         ),
         "pf append model_claim",
     );
@@ -84,7 +94,8 @@ fn seed_verified(env: &Env, task: &str) {
 }
 
 fn read_json(path: &Path) -> serde_json::Value {
-    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let raw =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
@@ -97,8 +108,13 @@ fn assert_pass_manifest(env: &Env, task: &str) {
     let manifest: serde_json::Value = read_json(&env.manifest(task));
     assert_eq!(manifest["task_id"], task, "manifest task_id");
     assert_eq!(manifest["passed"], true, "manifest passed must be true");
-    let bundle_sha = manifest["bundle_sha256"].as_str().expect("bundle_sha256 present");
-    assert!(is_hex64(bundle_sha), "bundle_sha256 must be 64 hex chars, got {bundle_sha}");
+    let bundle_sha = manifest["bundle_sha256"]
+        .as_str()
+        .expect("bundle_sha256 present");
+    assert!(
+        is_hex64(bundle_sha),
+        "bundle_sha256 must be 64 hex chars, got {bundle_sha}"
+    );
     let tail = manifest["tail_hash"].as_str().expect("tail_hash present");
     assert!(is_hex64(tail), "tail_hash must be 64 hex chars, got {tail}");
     assert!(
@@ -160,8 +176,14 @@ fn test_gate_exit_1_on_missing_evidence() {
         "no bundle may be fabricated on a failed gate"
     );
     let manifest: serde_json::Value = read_json(&env.manifest("T2"));
-    assert_eq!(manifest["passed"], false, "fail manifest must say passed=false");
-    assert!(manifest["bundle_sha256"].is_null(), "bundle_sha256 must be null on FAIL");
+    assert_eq!(
+        manifest["passed"], false,
+        "fail manifest must say passed=false"
+    );
+    assert!(
+        manifest["bundle_sha256"].is_null(),
+        "bundle_sha256 must be null on FAIL"
+    );
 }
 
 #[test]
@@ -169,22 +191,40 @@ fn test_bundle_reproducible() {
     let env = Env::new();
     seed_verified(&env, "T3");
 
-    assert_ok(&pf(&env, &["gate", "T3", "--required", "verified"]), "first gate run");
+    assert_ok(
+        &pf(&env, &["gate", "T3", "--required", "verified"]),
+        "first gate run",
+    );
     let bundle_first = std::fs::read(&env.bundle("T3")).unwrap();
     let manifest_first = read_json(&env.manifest("T3"));
-    let sha_first = manifest_first["bundle_sha256"].as_str().unwrap().to_string();
+    let sha_first = manifest_first["bundle_sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    assert_ok(&pf(&env, &["gate", "T3", "--required", "verified"]), "second gate run");
+    assert_ok(
+        &pf(&env, &["gate", "T3", "--required", "verified"]),
+        "second gate run",
+    );
     let bundle_second = std::fs::read(&env.bundle("T3")).unwrap();
     let manifest_second = read_json(&env.manifest("T3"));
-    let sha_second = manifest_second["bundle_sha256"].as_str().unwrap().to_string();
+    let sha_second = manifest_second["bundle_sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     assert_eq!(
         bundle_first, bundle_second,
         "bundle .jsonl must be byte-identical across runs"
     );
-    assert_eq!(sha_first, sha_second, "bundle_sha256 must be identical across runs");
-    assert_eq!(manifest_first, manifest_second, "manifests must be identical across runs");
+    assert_eq!(
+        sha_first, sha_second,
+        "bundle_sha256 must be identical across runs"
+    );
+    assert_eq!(
+        manifest_first, manifest_second,
+        "manifests must be identical across runs"
+    );
 }
 
 #[test]
@@ -192,7 +232,10 @@ fn test_bundle_snapshot_matches_ledger() {
     let env = Env::new();
     seed_verified(&env, "T4");
 
-    assert_ok(&pf(&env, &["gate", "T4", "--required", "verified"]), "pf gate T4");
+    assert_ok(
+        &pf(&env, &["gate", "T4", "--required", "verified"]),
+        "pf gate T4",
+    );
 
     // manifest tail_hash == `pf ledger tail` (head of the whole chain)
     let tail_out = pf(&env, &["ledger", "tail"]);

@@ -127,7 +127,9 @@ pub fn spawn(tool: &Tool, args: &[String]) -> Result<Child, RunnerError> {
     }
     let mut cmd = Command::new(&tool.bin);
     cmd.args(&tool.args).args(args);
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     cmd.spawn().map_err(|e| RunnerError::Spawn(e.to_string()))
 }
 
@@ -239,7 +241,11 @@ mod tests {
         let out = run(&t, &["some arg".to_string()]).unwrap();
         // The command string is built as `bin args...` joined by space, so a
         // space inside a typed arg is preserved verbatim (no shell split).
-        assert!(out.command.ends_with("some arg"), "arg not verbatim: {}", out.command);
+        assert!(
+            out.command.ends_with("some arg"),
+            "arg not verbatim: {}",
+            out.command
+        );
         assert!(out.command.starts_with("cargo"));
         assert!(out.exit_code == 0);
     }
@@ -249,7 +255,11 @@ mod tests {
         let t = tool("cargo --version");
         let out = run(&t, &[]).unwrap();
         // argv[0] is the allowlisted bin (cargo), never a shell.
-        assert!(out.command.starts_with("cargo"), "no shell in command: {}", out.command);
+        assert!(
+            out.command.starts_with("cargo"),
+            "no shell in command: {}",
+            out.command
+        );
         assert!(!out.command.contains("sh -c"));
         assert!(out.exit_code == 0);
     }

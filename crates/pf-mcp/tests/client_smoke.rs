@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rmcp::{
-    ClientHandler,
     model::*,
-    service::{RoleClient, RunningService, serve_directly},
+    service::{serve_directly, RoleClient, RunningService},
+    ClientHandler,
 };
 use serde_json::{json, Value};
 use tokio::process::{Child, Command};
@@ -22,11 +22,7 @@ static LEDGER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_ledger_path() -> PathBuf {
     let n = LEDGER_COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!(
-        "pf-mcp-army-{}-{}.jsonl",
-        std::process::id(),
-        n
-    ))
+    std::env::temp_dir().join(format!("pf-mcp-army-{}-{}.jsonl", std::process::id(), n))
 }
 
 /// Minimal tools-only client (all `ClientHandler` methods have defaults).
@@ -148,7 +144,10 @@ async fn test_army_smoke_full_flow() {
     )
     .await
     .expect("gate_evaluate should succeed");
-    assert_eq!(eval["passed"], true, "gate should pass on intact ledger: {eval}");
+    assert_eq!(
+        eval["passed"], true,
+        "gate should pass on intact ledger: {eval}"
+    );
     assert_eq!(eval["task_id"], "task-8-army-smoke");
     assert_eq!(eval["verified"], 1);
     assert!(!eval["chain_tail_hash"].as_str().unwrap().is_empty());

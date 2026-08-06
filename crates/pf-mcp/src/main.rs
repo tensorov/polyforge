@@ -13,8 +13,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ledger_path =
         std::env::var("PF_MCP_LEDGER").unwrap_or_else(|_| ".omo/ledger.jsonl".to_string());
 
-    let server = PolyForgeServer::new(ledger_path)
-        .map_err(|e| format!("failed to open ledger: {e:?}"))?;
+    let server =
+        PolyForgeServer::new(ledger_path).map_err(|e| format!("failed to open ledger: {e:?}"))?;
 
     match transport.as_str() {
         "stdio" => {
@@ -25,8 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .await?;
         }
         "tcp" => {
-            let addr = std::env::var("PF_MCP_ADDR")
-                .unwrap_or_else(|_| "127.0.0.1:18888".to_string());
+            let addr =
+                std::env::var("PF_MCP_ADDR").unwrap_or_else(|_| "127.0.0.1:18888".to_string());
             let listener = tokio::net::TcpListener::bind(&addr).await?;
             eprintln!("pf-mcp listening on {addr} (PF_MCP_TRANSPORT=tcp)");
             loop {

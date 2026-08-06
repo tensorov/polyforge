@@ -23,7 +23,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use pf_core::evidence::{EvidenceEntry, EvidenceState, promote};
+use pf_core::evidence::{promote, EvidenceEntry, EvidenceState};
 use pf_core::gate::{evaluate_complete, Evaluation, GateError};
 use pf_core::ledger::{EvidenceEntry as LedgerEntry, Ledger};
 
@@ -121,8 +121,7 @@ fn cmd_append(
                 "none",
                 payload,
             );
-            promote(&claim, &attestation)
-                .map_err(|e| format!("promotion rejected: {e:?}"))?
+            promote(&claim, &attestation).map_err(|e| format!("promotion rejected: {e:?}"))?
         }
         "validation" => {
             let verified = latest_state_of_state(&ledger, task_id, "Verified")?
@@ -135,13 +134,14 @@ fn cmd_append(
                 payload,
                 payload,
             );
-            promote(&verified, &validation)
-                .map_err(|e| format!("promotion rejected: {e:?}"))?
+            promote(&verified, &validation).map_err(|e| format!("promotion rejected: {e:?}"))?
         }
         _ => unreachable!("parse_kind validated kind"),
     };
 
-    let id = ledger.append(entry.to_ledger_entry()).map_err(|e| format!("append: {e:?}"))?;
+    let id = ledger
+        .append(entry.to_ledger_entry())
+        .map_err(|e| format!("append: {e:?}"))?;
     println!("appended entry {id}");
     Ok(())
 }
@@ -151,7 +151,9 @@ fn latest_state_of_state(
     task_id: &str,
     state: &str,
 ) -> Result<Option<EvidenceEntry>, String> {
-    let entries = ledger.iter_entries().map_err(|e| format!("iter entries: {e:?}"))?;
+    let entries = ledger
+        .iter_entries()
+        .map_err(|e| format!("iter entries: {e:?}"))?;
     Ok(entries
         .into_iter()
         .rev()
@@ -168,22 +170,56 @@ fn latest_state_of_state(
                 Some("Validated") => EvidenceState::Validated,
                 _ => EvidenceState::ModelClaimed,
             };
-            let commit_sha = le.payload.get("commit_sha").and_then(|v| v.as_str()).unwrap_or("none");
-            let diff_hash = le.payload.get("diff_hash").and_then(|v| v.as_str()).unwrap_or("none");
-            let command = le.payload.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let exit_code = le.payload.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let stdout_hash = le.payload.get("stdout_hash").and_then(|v| v.as_str()).unwrap_or("");
-            let validator = le.payload.get("validator").and_then(|v| v.as_str()).unwrap_or("");
-            let rationale = le.payload.get("rationale").and_then(|v| v.as_str()).unwrap_or("");
+            let commit_sha = le
+                .payload
+                .get("commit_sha")
+                .and_then(|v| v.as_str())
+                .unwrap_or("none");
+            let diff_hash = le
+                .payload
+                .get("diff_hash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("none");
+            let command = le
+                .payload
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let exit_code = le
+                .payload
+                .get("exit_code")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
+            let stdout_hash = le
+                .payload
+                .get("stdout_hash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let validator = le
+                .payload
+                .get("validator")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let rationale = le
+                .payload
+                .get("rationale")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             match state {
                 EvidenceState::ModelClaimed => EvidenceEntry::new_claim(
-                    le.payload.get("task_id").and_then(|v| v.as_str()).unwrap_or(task_id),
+                    le.payload
+                        .get("task_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(task_id),
                     commit_sha,
                     diff_hash,
                     &le.ts,
                 ),
                 EvidenceState::Verified => EvidenceEntry::tool_attestation(
-                    le.payload.get("task_id").and_then(|v| v.as_str()).unwrap_or(task_id),
+                    le.payload
+                        .get("task_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(task_id),
                     commit_sha,
                     diff_hash,
                     &le.tool_version,
@@ -194,7 +230,10 @@ fn latest_state_of_state(
                     &le.ts,
                 ),
                 EvidenceState::Validated => EvidenceEntry::validation(
-                    le.payload.get("task_id").and_then(|v| v.as_str()).unwrap_or(task_id),
+                    le.payload
+                        .get("task_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(task_id),
                     commit_sha,
                     diff_hash,
                     validator,
@@ -207,7 +246,9 @@ fn latest_state_of_state(
 
 fn cmd_ledger_tail() -> Result<(), String> {
     let ledger = Ledger::new(&ledger_path());
-    let state = ledger.verify_chain().map_err(|e| format!("verify chain: {e:?}"))?;
+    let state = ledger
+        .verify_chain()
+        .map_err(|e| format!("verify chain: {e:?}"))?;
     println!("{}", state.head_hash);
     Ok(())
 }
@@ -236,7 +277,9 @@ fn parse_required(spec: &str) -> Result<Vec<EvidenceState>, String> {
 /// Collect this task's ledger entries, sorted by seq (insertion order).
 fn task_entries(task_id: &str) -> Result<Vec<LedgerEntry>, String> {
     let ledger = Ledger::new(&ledger_path());
-    let entries = ledger.iter_entries().map_err(|e| format!("iter entries: {e:?}"))?;
+    let entries = ledger
+        .iter_entries()
+        .map_err(|e| format!("iter entries: {e:?}"))?;
     let mut out: Vec<_> = entries
         .into_iter()
         .filter(|e| e.payload.get("task_id").and_then(|v| v.as_str()) == Some(task_id))
@@ -259,7 +302,8 @@ fn write_bundle(task_id: &str, eval: &Evaluation) -> Result<(), String> {
         jsonl.push_str(&line);
         jsonl.push('\n');
     }
-    fs::write(&jsonl_path, &jsonl).map_err(|e| format!("write bundle {}: {e}", jsonl_path.display()))?;
+    fs::write(&jsonl_path, &jsonl)
+        .map_err(|e| format!("write bundle {}: {e}", jsonl_path.display()))?;
 
     let bundle_sha256 = sha256_hex(jsonl.as_bytes());
     let manifest = serde_json::json!({
@@ -381,7 +425,13 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
                 }
                 i += 1;
             }
-            cmd_append(&kind, &payload, &task_id, commit.as_deref(), diff.as_deref())?;
+            cmd_append(
+                &kind,
+                &payload,
+                &task_id,
+                commit.as_deref(),
+                diff.as_deref(),
+            )?;
             Ok(ExitCode::SUCCESS)
         }
         "ledger" => {

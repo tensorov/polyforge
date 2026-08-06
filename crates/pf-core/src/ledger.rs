@@ -101,7 +101,11 @@ pub enum LedgerError {
     /// A stored line is not valid JSON / not a valid entry.
     Json(String),
     /// The chain is broken at `seq`: `expected` hash did not match `found`.
-    ChainBroken { seq: u64, expected: String, found: String },
+    ChainBroken {
+        seq: u64,
+        expected: String,
+        found: String,
+    },
     /// The ledger file is empty (no genesis entry yet).
     EmptyChain,
 }
@@ -130,8 +134,8 @@ impl Ledger {
         // prev_hash = SHA-256 of the previous entry's canonical JSON (plan contract)
         let prev_hash = match entries.last() {
             Some(prev) => {
-                let canonical = serde_json::to_string(prev)
-                    .map_err(|e| LedgerError::Json(e.to_string()))?;
+                let canonical =
+                    serde_json::to_string(prev).map_err(|e| LedgerError::Json(e.to_string()))?;
                 hex(&Sha256::digest(canonical.as_bytes()))
             }
             None => String::new(),
@@ -146,10 +150,8 @@ impl Ledger {
             .append(true)
             .open(&self.path)
             .map_err(|e| LedgerError::Io(e.to_string()))?;
-        let line = serde_json::to_string(&entry)
-            .map_err(|e| LedgerError::Json(e.to_string()))?;
-        writeln!(file, "{line}")
-            .map_err(|e| LedgerError::Io(e.to_string()))?;
+        let line = serde_json::to_string(&entry).map_err(|e| LedgerError::Json(e.to_string()))?;
+        writeln!(file, "{line}").map_err(|e| LedgerError::Io(e.to_string()))?;
         self.write_anchor(&Anchor {
             entry_count: next_seq + 1,
             head_hash: entry.hash.clone(),
@@ -243,8 +245,8 @@ impl Ledger {
             if line.trim().is_empty() {
                 continue;
             }
-            let entry: EvidenceEntry = serde_json::from_str(&line)
-                .map_err(|e| LedgerError::Json(e.to_string()))?;
+            let entry: EvidenceEntry =
+                serde_json::from_str(&line).map_err(|e| LedgerError::Json(e.to_string()))?;
             entries.push(entry);
         }
         Ok(entries)
@@ -259,8 +261,7 @@ impl Ledger {
     fn write_anchor(&self, anchor: &Anchor) -> Result<(), LedgerError> {
         let anchor_path = self.anchor_path();
         let tmp = anchor_path.with_extension("anchor.tmp");
-        let json = serde_json::to_string(anchor)
-            .map_err(|e| LedgerError::Json(e.to_string()))?;
+        let json = serde_json::to_string(anchor).map_err(|e| LedgerError::Json(e.to_string()))?;
         std::fs::write(&tmp, json).map_err(|e| LedgerError::Io(e.to_string()))?;
         std::fs::rename(&tmp, &anchor_path).map_err(|e| LedgerError::Io(e.to_string()))?;
         Ok(())
@@ -273,8 +274,8 @@ impl Ledger {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(LedgerError::Io(e.to_string())),
         };
-        let anchor: Anchor = serde_json::from_str(&content)
-            .map_err(|e| LedgerError::Json(e.to_string()))?;
+        let anchor: Anchor =
+            serde_json::from_str(&content).map_err(|e| LedgerError::Json(e.to_string()))?;
         Ok(Some(anchor))
     }
 }
@@ -282,8 +283,7 @@ impl Ledger {
 /// Compute the identity hash of an entry:
 /// `SHA-256(seq || prev_hash || kind || canonical(payload) || tool_version || env_fingerprint || ts)`.
 fn compute_hash(entry: &EvidenceEntry) -> String {
-    let payload = serde_json::to_string(&entry.payload)
-        .unwrap_or_else(|_| "null".to_string());
+    let payload = serde_json::to_string(&entry.payload).unwrap_or_else(|_| "null".to_string());
     let input = format!(
         "{}{}{}{}{}{}{}",
         entry.seq,
@@ -427,6 +427,9 @@ mod tests {
         }
         let sa = a.verify_chain().unwrap();
         let sb = b.verify_chain().unwrap();
-        assert_eq!(sa.head_hash, sb.head_hash, "same sequence -> same head hash");
+        assert_eq!(
+            sa.head_hash, sb.head_hash,
+            "same sequence -> same head hash"
+        );
     }
 }

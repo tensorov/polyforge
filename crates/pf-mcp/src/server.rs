@@ -14,7 +14,7 @@ use pf_toolrunner::verify::verify_and_append;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::ErrorData;
 use rmcp::schemars::JsonSchema;
-use rmcp::{Json, tool, tool_router};
+use rmcp::{tool, tool_router, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -32,8 +32,7 @@ impl PolyForgeServer {
         let path = ledger_path.into();
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| LedgerError::Io(e.to_string()))?;
+                std::fs::create_dir_all(parent).map_err(|e| LedgerError::Io(e.to_string()))?;
             }
         }
         Ok(Self { ledger_path: path })
@@ -58,9 +57,7 @@ fn parse_state(s: &str) -> Result<EvidenceState, ErrorData> {
         "Verified" => Ok(EvidenceState::Verified),
         "Validated" => Ok(EvidenceState::Validated),
         other => Err(ErrorData::invalid_params(
-            format!(
-                "unknown evidence state {other:?} (expected ModelClaimed|Verified|Validated)"
-            ),
+            format!("unknown evidence state {other:?} (expected ModelClaimed|Verified|Validated)"),
             None,
         )),
     }

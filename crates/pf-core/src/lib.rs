@@ -7,6 +7,8 @@ pub mod evidence;
 pub mod gate;
 pub mod ledger;
 
-pub use evidence::{EvidenceEntry as TriStateEvidence, EvidenceError, EvidenceKind, EvidenceState, promote};
-pub use gate::{Counts, Evaluation, GateError, evaluate_complete};
+pub use evidence::{
+    promote, EvidenceEntry as TriStateEvidence, EvidenceError, EvidenceKind, EvidenceState,
+};
+pub use gate::{evaluate_complete, Counts, Evaluation, GateError};
 pub use ledger::{ChainState, EntryId, EvidenceEntry, Ledger, LedgerError};

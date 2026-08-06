@@ -47,8 +47,8 @@ pub fn verify_and_append(
         claim.diff_hash.clone(),
         claim.ts.clone(),
     );
-    let verified = promote(&claim, &attestation)
-        .map_err(|e| RunnerError::Promote(format!("{e:?}")))?;
+    let verified =
+        promote(&claim, &attestation).map_err(|e| RunnerError::Promote(format!("{e:?}")))?;
     ledger
         .append(verified.to_ledger_entry())
         .map_err(|e| RunnerError::Ledger(format!("{e:?}")))?;
@@ -98,18 +98,39 @@ fn tri_state_from_ledger(entry: &LedgerEntry) -> Result<EvidenceEntry, RunnerErr
         _ => return Err(RunnerError::Promote("missing or invalid state".into())),
     };
     Ok(EvidenceEntry {
-        task_id: entry.payload["task_id"].as_str().unwrap_or_default().to_string(),
-        commit_sha: entry.payload["commit_sha"].as_str().unwrap_or_default().to_string(),
-        diff_hash: entry.payload["diff_hash"].as_str().unwrap_or_default().to_string(),
+        task_id: entry.payload["task_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        commit_sha: entry.payload["commit_sha"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        diff_hash: entry.payload["diff_hash"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         kind,
         state,
         tool_version: entry.tool_version.clone(),
         env_fingerprint: entry.env_fingerprint.clone(),
-        command: entry.payload["command"].as_str().unwrap_or_default().to_string(),
+        command: entry.payload["command"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         exit_code: entry.payload["exit_code"].as_i64().unwrap_or(0) as i32,
-        stdout_hash: entry.payload["stdout_hash"].as_str().unwrap_or_default().to_string(),
-        validator: entry.payload["validator"].as_str().unwrap_or_default().to_string(),
-        rationale: entry.payload["rationale"].as_str().unwrap_or_default().to_string(),
+        stdout_hash: entry.payload["stdout_hash"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        validator: entry.payload["validator"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        rationale: entry.payload["rationale"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
         ts: entry.ts.clone(),
     })
 }
@@ -150,8 +171,7 @@ mod tests {
         let claim_id = append_claim(&mut ledger, "T6");
 
         let verified =
-            verify_and_append(&mut ledger, "T6", claim_id, &tool("cargo --version"), &[])
-                .unwrap();
+            verify_and_append(&mut ledger, "T6", claim_id, &tool("cargo --version"), &[]).unwrap();
 
         assert_eq!(verified.kind, EvidenceKind::ToolAttestation);
         assert_eq!(verified.state, EvidenceState::Verified);
@@ -218,9 +238,14 @@ mod tests {
         let path = tmp_path("wrong-task");
         let mut ledger = Ledger::new(&path);
         let claim_id = append_claim(&mut ledger, "T6");
-        let err =
-            verify_and_append(&mut ledger, "OTHER", claim_id, &tool("cargo --version"), &[])
-                .unwrap_err();
+        let err = verify_and_append(
+            &mut ledger,
+            "OTHER",
+            claim_id,
+            &tool("cargo --version"),
+            &[],
+        )
+        .unwrap_err();
         assert!(matches!(err, RunnerError::ClaimNotFound(_)));
         assert_eq!(ledger.iter_entries().unwrap().len(), 1);
     }

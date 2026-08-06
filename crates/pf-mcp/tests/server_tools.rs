@@ -9,9 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use pf_mcp::server::PolyForgeServer;
 use rmcp::{
-    ClientHandler,
     model::*,
-    service::{RoleClient, RoleServer, RunningService, serve_directly},
+    service::{serve_directly, RoleClient, RoleServer, RunningService},
+    ClientHandler,
 };
 use serde_json::json;
 
