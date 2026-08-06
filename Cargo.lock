@@ -418,6 +418,8 @@ name = "pf-cli"
 version = "0.1.0"
 dependencies = [
  "pf-core",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
