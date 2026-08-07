@@ -3,6 +3,9 @@ name = "pf-toolrunner"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Allowlisted, typed-argument, no-shell command runner producing verified tool attestations"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "pf_toolrunner"

@@ -3,6 +3,9 @@ name = "pf-mcp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "MCP server exposing the PolyForge evidence ledger and completion gate over stdio (rmcp)"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 pf-core = { path = "../pf-core" }
