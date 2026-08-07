@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/pf-core",
-    "crates/pf-toolrunner",
-    "crates/pf-mcp",
-    "crates/pf-cli",
+    "crates/polyforge-core",
+    "crates/polyforge-toolrunner",
+    "crates/polyforge-mcp",
+    "crates/polyforge-cli",
 ]
 
 [workspace.package]

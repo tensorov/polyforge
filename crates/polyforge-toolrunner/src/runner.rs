@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use pf_core::evidence::EvidenceEntry;
+use polyforge_core::evidence::EvidenceEntry;
 use sha2::{Digest, Sha256};
 
 /// A tool on the allowlist.
@@ -36,7 +36,7 @@ pub struct RunOutput {
 }
 
 impl RunOutput {
-    /// Build a `ToolAttestation` (state `Verified`) ready for `pf_core::promote`.
+    /// Build a `ToolAttestation` (state `Verified`) ready for `polyforge_core::promote`.
     pub fn to_attestation(
         &self,
         task_id: impl Into<String>,
@@ -218,7 +218,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pf_core::evidence::{EvidenceKind, EvidenceState};
+    use polyforge_core::evidence::{EvidenceKind, EvidenceState};
 
     fn tool(name: &str) -> Tool {
         lookup(name).expect("tool on allowlist")

@@ -1,5 +1,5 @@
 [package]
-name = "pf-cli"
+name = "polyforge-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-pf-core = { path = "../../crates/pf-core" }
+polyforge-core = { path = "../../crates/polyforge-core" }
 serde_json = "1"
 sha2 = "0.10"

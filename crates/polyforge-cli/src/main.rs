@@ -1,4 +1,4 @@
-//! pf-cli — PolyForge command-line interface.
+//! polyforge-cli — PolyForge command-line interface.
 //!
 //! Subcommands:
 //!   pf init                 create the ledger at `.omo/ledger.jsonl` if missing (idempotent)
@@ -14,7 +14,7 @@
 //! Tri-state honesty: `pf append tool_attestation` and `pf append validation`
 //! do NOT fabricate state. They locate the latest eligible entry for the task
 //! (ModelClaimed for an attestation, Verified for a validation) and promote it
-//! through `pf_core::evidence::promote` — the single gatekeeper enforcing the
+//! through `polyforge_core::evidence::promote` — the single gatekeeper enforcing the
 //! claim -> verified -> validated chain. A bare attestation with no prior claim
 //! is rejected.
 
@@ -23,9 +23,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use pf_core::evidence::{promote, EvidenceEntry, EvidenceState};
-use pf_core::gate::{evaluate_complete, Evaluation, GateError};
-use pf_core::ledger::{EvidenceEntry as LedgerEntry, Ledger};
+use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceState};
+use polyforge_core::gate::{evaluate_complete, Evaluation, GateError};
+use polyforge_core::ledger::{EvidenceEntry as LedgerEntry, Ledger};
 
 const DEFAULT_LEDGER: &str = ".omo/ledger.jsonl";
 const DEFAULT_EVIDENCE_DIR: &str = ".omo/evidence/";
@@ -114,7 +114,7 @@ fn cmd_append(
                 task_id,
                 &claim.commit_sha,
                 &claim.diff_hash,
-                "pf-cli-1.95.0",
+                "polyforge-cli-1.95.0",
                 env::var("PF_ENV_FINGERPRINT").unwrap_or_else(|_| "cli".to_string()),
                 payload,
                 0,
@@ -130,7 +130,7 @@ fn cmd_append(
                 task_id,
                 &verified.commit_sha,
                 &verified.diff_hash,
-                "pf-cli-operator",
+                "polyforge-cli-operator",
                 payload,
                 payload,
             );

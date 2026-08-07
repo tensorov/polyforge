@@ -3,7 +3,7 @@
 //!
 //! Flow: load the `ModelClaimed` entry from the ledger → verify chain
 //! integrity → run the allowlisted tool → build a `ToolAttestation` from the
-//! `RunOutput` → promote via [`pf_core::evidence::promote`] → append the
+//! `RunOutput` → promote via [`polyforge_core::evidence::promote`] → append the
 //! `Verified` entry back to the ledger.
 //!
 //! Invariants:
@@ -13,8 +13,8 @@
 //! * No wall-clock: the attestation reuses the claim's `ts` datum.
 //! * A failed gate leaves the ledger untouched (zero partial writes).
 
-use pf_core::evidence::{promote, EvidenceEntry, EvidenceKind, EvidenceState};
-use pf_core::ledger::{EntryId, EvidenceEntry as LedgerEntry, Ledger};
+use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceKind, EvidenceState};
+use polyforge_core::ledger::{EntryId, EvidenceEntry as LedgerEntry, Ledger};
 
 use crate::runner::{run, RunnerError, Tool};
 

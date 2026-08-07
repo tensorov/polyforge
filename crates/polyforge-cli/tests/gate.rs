@@ -1,7 +1,7 @@
-//! Integration tests for the `pf-cli` gate command.
+//! Integration tests for the `polyforge-cli` gate command.
 //!
-//! Spawn the REAL binary (`env!("CARGO_BIN_EXE_pf-cli")`) against unique
-//! per-test temp ledgers/evidence dirs (AtomicU64 counter — pf-core pattern,
+//! Spawn the REAL binary (`env!("CARGO_BIN_EXE_polyforge-cli")`) against unique
+//! per-test temp ledgers/evidence dirs (AtomicU64 counter — polyforge-core pattern,
 //! no fixed paths). The honest tri-state chain is built through the CLI
 //! itself: `model_claim` then a `tool_attestation` that promotes the claim
 //! to `Verified`. Gates assert on manifest CONTENT (passed / bundle_sha256 /
@@ -22,7 +22,7 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("pf-cli-gate-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("polyforge-gate-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Self {
             ledger: dir.join("ledger.jsonl"),
@@ -40,12 +40,12 @@ impl Env {
 }
 
 fn pf(env: &Env, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pf-cli"))
+    Command::new(env!("CARGO_BIN_EXE_polyforge-cli"))
         .args(args)
         .env("PF_LEDGER", &env.ledger)
         .env("PF_EVIDENCE_DIR", &env.evidence_dir)
         .output()
-        .expect("failed to spawn pf-cli binary")
+        .expect("failed to spawn polyforge-cli binary")
 }
 
 fn exit_code(out: &Output) -> i32 {

@@ -1,6 +1,6 @@
-//! End-to-end "army" harness for `pf-cli`: drives the REAL binary
-//! (`env!("CARGO_BIN_EXE_pf-cli")`) against unique per-test temp ledgers
-//! (AtomicU64 counter, distinct `pf-cli-army-` prefix so parallel gate.rs
+//! End-to-end "army" harness for `polyforge-cli`: drives the REAL binary
+//! (`env!("CARGO_BIN_EXE_polyforge-cli")`) against unique per-test temp ledgers
+//! (AtomicU64 counter, distinct `polyforge-army-` prefix so parallel gate.rs
 //! tests never collide). Nothing is mocked: the ledger, the tri-state chain
 //! and the toolrunner path all run through the actual subprocesses.
 //!
@@ -27,7 +27,7 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("pf-cli-army-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("polyforge-army-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Self {
             ledger: dir.join("ledger.jsonl"),
@@ -45,12 +45,12 @@ impl Env {
 }
 
 fn pf(env: &Env, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_pf-cli"))
+    Command::new(env!("CARGO_BIN_EXE_polyforge-cli"))
         .args(args)
         .env("PF_LEDGER", &env.ledger)
         .env("PF_EVIDENCE_DIR", &env.evidence_dir)
         .output()
-        .expect("failed to spawn pf-cli binary")
+        .expect("failed to spawn polyforge-cli binary")
 }
 
 fn exit_code(out: &Output) -> i32 {

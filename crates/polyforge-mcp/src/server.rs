@@ -6,11 +6,11 @@
 
 use std::path::PathBuf;
 
-use pf_core::evidence::EvidenceState;
-use pf_core::gate::evaluate_complete;
-use pf_core::ledger::{EvidenceEntry as LedgerEntry, Ledger, LedgerError};
-use pf_toolrunner::runner::lookup;
-use pf_toolrunner::verify::verify_and_append;
+use polyforge_core::evidence::EvidenceState;
+use polyforge_core::gate::evaluate_complete;
+use polyforge_core::ledger::{EvidenceEntry as LedgerEntry, Ledger, LedgerError};
+use polyforge_toolrunner::runner::lookup;
+use polyforge_toolrunner::verify::verify_and_append;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::ErrorData;
 use rmcp::schemars::JsonSchema;
@@ -181,7 +181,7 @@ impl PolyForgeServer {
                 None,
             ));
         }
-        let claim = pf_core::evidence::EvidenceEntry::new_claim(
+        let claim = polyforge_core::evidence::EvidenceEntry::new_claim(
             arguments.task_id.clone(),
             arguments.commit_sha.clone(),
             arguments.diff_hash.clone(),

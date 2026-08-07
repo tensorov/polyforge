@@ -318,7 +318,7 @@ mod tests {
     }
 
     fn entry(kind: &str, payload: serde_json::Value) -> EvidenceEntry {
-        EvidenceEntry::new(kind, payload, "pf-core-test", "env-test", "ts-1")
+        EvidenceEntry::new(kind, payload, "polyforge-core-test", "env-test", "ts-1")
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! T8 army validator harness proof-of-life: spawn the REAL pf-mcp server
+//! T8 army validator harness proof-of-life: spawn the REAL polyforge-mcp server
 //! binary as a subprocess over stdio and drive it with a REAL rmcp client.
 //!
 //! No external MCP registry / network required — everything runs over the
@@ -22,7 +22,11 @@ static LEDGER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_ledger_path() -> PathBuf {
     let n = LEDGER_COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!("pf-mcp-army-{}-{}.jsonl", std::process::id(), n))
+    std::env::temp_dir().join(format!(
+        "polyforge-mcp-army-{}-{}.jsonl",
+        std::process::id(),
+        n
+    ))
 }
 
 /// Minimal tools-only client (all `ClientHandler` methods have defaults).
@@ -39,14 +43,14 @@ fn server_info() -> ServerInfo {
 /// Spawn the real server binary with a fresh ledger and return the child plus
 /// a connected rmcp client over its stdio.
 async fn spawn_server(ledger: &Path) -> (Child, RunningService<RoleClient, TestClient>) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pf-mcp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_polyforge-mcp"))
         .env("PF_MCP_LEDGER", ledger.as_os_str())
         .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn pf-mcp binary");
+        .expect("spawn polyforge-mcp binary");
 
     let stdin = child.stdin.take().expect("child stdin");
     let stdout = child.stdout.take().expect("child stdout");

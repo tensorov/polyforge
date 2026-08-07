@@ -1,5 +1,5 @@
 [package]
-name = "pf-mcp"
+name = "polyforge-mcp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-pf-core = { path = "../pf-core" }
-pf-toolrunner = { path = "../pf-toolrunner" }
+polyforge-core = { path = "../polyforge-core" }
+polyforge-toolrunner = { path = "../polyforge-toolrunner" }
 rmcp = { version = "3", features = ["transport-io", "client"] }
 schemars = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

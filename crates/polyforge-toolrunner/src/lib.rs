@@ -1,4 +1,4 @@
-//! pf-toolrunner: PolyForge tool execution.
+//! polyforge-toolrunner: PolyForge tool execution.
 //!
 //! Allowlist + typed-args tool runner with no-shell spawning and per-command
 //! environment fingerprinting. Evidence becomes `Verified` only through an

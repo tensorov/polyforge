@@ -4,7 +4,7 @@
 //! server over an in-memory duplex transport. This binary only selects the
 //! transport (stdio by default, tcp when `PF_MCP_TRANSPORT=tcp`) and serves.
 
-use pf_mcp::server::PolyForgeServer;
+use polyforge_mcp::server::PolyForgeServer;
 use rmcp::service::ServiceExt;
 
 #[tokio::main]
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let addr =
                 std::env::var("PF_MCP_ADDR").unwrap_or_else(|_| "127.0.0.1:18888".to_string());
             let listener = tokio::net::TcpListener::bind(&addr).await?;
-            eprintln!("pf-mcp listening on {addr} (PF_MCP_TRANSPORT=tcp)");
+            eprintln!("polyforge-mcp listening on {addr} (PF_MCP_TRANSPORT=tcp)");
             loop {
                 let (stream, _) = listener.accept().await?;
                 let server = server.clone();

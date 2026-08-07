@@ -1,5 +1,5 @@
 [package]
-name = "pf-toolrunner"
+name = "polyforge-toolrunner"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "pf_toolrunner"
+name = "polyforge_toolrunner"
 path = "src/lib.rs"
 
 [dependencies]
-pf-core = { path = "../pf-core" }
+polyforge-core = { path = "../polyforge-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "=0.10.9"

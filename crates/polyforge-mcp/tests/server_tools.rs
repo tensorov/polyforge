@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use pf_mcp::server::PolyForgeServer;
+use polyforge_mcp::server::PolyForgeServer;
 use rmcp::{
     model::*,
     service::{serve_directly, RoleClient, RoleServer, RunningService},
@@ -26,7 +26,7 @@ impl ClientHandler for TestClient {}
 fn client_info() -> ClientInfo {
     ClientInfo::new(
         ClientCapabilities::builder().enable_elicitation().build(),
-        Implementation::new("pf-mcp-test-client", "0.0.0"),
+        Implementation::new("polyforge-mcp-test-client", "0.0.0"),
     )
     .with_protocol_version(ProtocolVersion::V_2026_07_28)
 }
@@ -40,7 +40,10 @@ fn server_info() -> ServerInfo {
 /// Unique temp ledger path for one test.
 fn temp_ledger() -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!("pf-mcp-test-{}-{n}.jsonl", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "polyforge-mcp-test-{}-{n}.jsonl",
+        std::process::id()
+    ))
 }
 
 /// Run `body` against a live server/client pair over an in-memory duplex.

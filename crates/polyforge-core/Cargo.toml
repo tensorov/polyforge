@@ -1,5 +1,5 @@
 [package]
-name = "pf-core"
+name = "polyforge-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "pf_core"
+name = "polyforge_core"
 path = "src/lib.rs"
 
 [dependencies]
