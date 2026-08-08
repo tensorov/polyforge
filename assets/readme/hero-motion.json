@@ -1,0 +1,11 @@
+{
+  "width": 1200, "fps": 30, "duration": 5.0, "colors": 192,
+  "dither": "none", "transparent_color": "#ff00ff",
+  "alpha_threshold": 128, "clip_to_base_alpha": true, "max_size_mb": 2.0,
+  "reveals": [
+    {"id": "chain-node-1", "axis": "x", "start": 0.05, "end": 0.75,  "exit": {"start": 4.0,  "end": 4.7}},
+    {"id": "chain-node-2", "axis": "x", "start": 0.55, "end": 1.25,  "exit": {"start": 4.05, "end": 4.75}},
+    {"id": "chain-node-3", "axis": "x", "start": 1.05, "end": 1.75,  "exit": {"start": 4.1,  "end": 4.8}},
+    {"id": "line-8",       "axis": "x", "start": 1.55, "end": 2.45,  "exit": {"start": 4.15, "end": 4.85}}
+  ]
+}
