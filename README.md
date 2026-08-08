@@ -3,15 +3,64 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tensorov/polyforge/actions/workflows/ci.yml/badge.svg)](https://github.com/tensorov/polyforge/actions)
 
+## Demo
+
+[![PolyForge — the gate demo, live](assets/readme/hero.gif)](assets/readme/hero.svg)
+
 PolyForge is a tamper-evident evidence ledger for AI-driven engineering workflows: models
 record claims, allowlisted tools attest them, and operators gate on the resulting chain.
+
+## Proof
 
 Everything in this README is covered by the workspace test suite (45 tests across the four
 crates) and by the CLI/MCP smoke and end-to-end harnesses.
 
+Run it yourself: `cargo build --workspace && cargo test --workspace` (see [Build from source](#build-from-source)).
+
 ## Why "PolyForge"
 
 > **Why "PolyForge"**: *poly* — many agents working together; *forge* — the place where their raw claims are forged into verifiable evidence: through the gate, a model's claim becomes a fact only when a real tool run proves it. (And yes — the name is also a wink: this is the forge that makes forged history impossible.)
+
+## Architecture
+
+Workspace of four crates (edition 2021, rust-version 1.85, Rust toolchain 1.95.0):
+
+| Crate                   | Responsibility                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------ |
+| `polyforge-core`        | Evidence model: tri-state entries, promotion rules, the append-only Merkle ledger, and deterministic gate evaluation. |
+| `polyforge-toolrunner`  | Allowlisted tool runner: only allowlisted binaries (cargo/rustc/gcc), typed arguments, no shell, per-command environment fingerprint. |
+| `polyforge-mcp`         | Model Context Protocol server (rmcp): the interface models use to append claims and query gates. |
+| `polyforge-cli`         | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.           |
+
+The CLI binary is named `polyforge-cli` (the crate name). All examples in this README use
+it directly; `alias pf=polyforge-cli` if you prefer the short name.
+
+## Evidence lifecycle
+
+Evidence is tri-state and only ever moves forward:
+
+![Evidence lifecycle: ModelClaimed → Verified → Validated](assets/readme/lifecycle.svg)
+
+- `model_claim` — the model records a claim about its own work. Creates a `ModelClaimed` entry.
+- `tool_attestation` — an allowlisted tool run produces a `ToolAttestation` entry that
+  promotes the task's `ModelClaimed` entry to `Verified`.
+- `validation` — an operator validation produces a `Validation` entry that promotes the
+  task's `Verified` entry to `Validated`.
+
+A gate can require `verified` or `validated` (see below).
+
+## Models can never self-produce `Verified`
+
+- The CLI accepts only three kinds: `model_claim`, `tool_attestation`, `validation`.
+  `model_claim` can only create a new `ModelClaimed` entry.
+- `tool_attestation` does not append a bare entry: it locates the task's latest
+  `ModelClaimed` entry and promotes it. With no prior claim the append is rejected
+  (models cannot self-promote).
+- The MCP `evidence_append` tool accepts `kind=ModelClaim` **only**; `ToolAttestation` and
+  `Validation` are rejected at the server — models connected over MCP cannot create
+  `Verified` or `Validated` entries at all.
+- Promotion is enforced by the single `promote` gatekeeper in `polyforge-core`; a model's
+  only path toward `Verified` is an allowlisted tool attestation.
 
 ## Build from source
 
@@ -64,53 +113,6 @@ Environment variables:
 
 - `PF_LEDGER` — ledger path (default `.omo/ledger.jsonl`).
 - `PF_EVIDENCE_DIR` — directory for gate bundles and manifests (default `.omo/evidence/`).
-
-## Architecture
-
-Workspace of four crates (edition 2021, rust-version 1.85, Rust toolchain 1.95.0):
-
-| Crate                   | Responsibility                                                                                   |
-| ----------------------- | ------------------------------------------------------------------------------------------------ |
-| `polyforge-core`        | Evidence model: tri-state entries, promotion rules, the append-only Merkle ledger, and deterministic gate evaluation. |
-| `polyforge-toolrunner`  | Allowlisted tool runner: only allowlisted binaries (cargo/rustc/gcc), typed arguments, no shell, per-command environment fingerprint. |
-| `polyforge-mcp`         | Model Context Protocol server (rmcp): the interface models use to append claims and query gates. |
-| `polyforge-cli`         | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.           |
-
-The CLI binary is named `polyforge-cli` (the crate name). All examples in this README use
-it directly; `alias pf=polyforge-cli` if you prefer the short name.
-
-## Evidence lifecycle
-
-Evidence is tri-state and only ever moves forward:
-
-```
- ModelClaimed ──► Verified ──► Validated
-      │               │             │
-      │ (model)       │ (tool)      │ (operator)
-      │ appends       │ attests     │ validates
-      └───────────────┴─────────────┘
-```
-
-- `model_claim` — the model records a claim about its own work. Creates a `ModelClaimed` entry.
-- `tool_attestation` — an allowlisted tool run produces a `ToolAttestation` entry that
-  promotes the task's `ModelClaimed` entry to `Verified`.
-- `validation` — an operator validation produces a `Validation` entry that promotes the
-  task's `Verified` entry to `Validated`.
-
-A gate can require `verified` or `validated` (see below).
-
-## Models can never self-produce `Verified`
-
-- The CLI accepts only three kinds: `model_claim`, `tool_attestation`, `validation`.
-  `model_claim` can only create a new `ModelClaimed` entry.
-- `tool_attestation` does not append a bare entry: it locates the task's latest
-  `ModelClaimed` entry and promotes it. With no prior claim the append is rejected
-  (models cannot self-promote).
-- The MCP `evidence_append` tool accepts `kind=ModelClaim` **only**; `ToolAttestation` and
-  `Validation` are rejected at the server — models connected over MCP cannot create
-  `Verified` or `Validated` entries at all.
-- Promotion is enforced by the single `promote` gatekeeper in `polyforge-core`; a model's
-  only path toward `Verified` is an allowlisted tool attestation.
 
 ## Running a gate
 
