@@ -275,24 +275,41 @@ All numbers were measured on this machine with the release binary; the rebuilt b
 ## Why it matters
 
 PolyForge is a single-format evidence ledger: one append-only Merkle chain, one tri-state
-entry model, one deterministic gate. The table below surveys the direct evidence-ledger and
+entry model, one deterministic gate. The matrix below surveys the direct evidence-ledger and
 MCP tools found on 2026-08-09, plus three adjacent categories for context. Among the direct
 evidence-ledger tools surveyed, PolyForge is the only Rust crate-workspace observed; the
 rest are single-language or proprietary. Facts come from each project's public page; where
-a source is silent the cell reads "Unknown".
+a source is silent the cell reads `?`.
 
-| Project | Category | Stack | Tamper-evident | Gate | Notes | Source (accessed 2026-08-09) |
-| ------- | -------- | ----- | -------------- | ---- | ----- | ----------------------------- |
-| `agent-gate` (Jott2121/agent-gate) | hash-chained receipts | Python | hash-chained receipts | 5-check gate | fail-closed checklist | https://github.com/Jott2121/agent-gate |
-| `AttestMCP` (attestmcp/attestmcp) | MCP proxy | Python | chained hashes | Unknown | Unknown | https://github.com/attestmcp/attestmcp |
-| `AGA MCP Server` (attestedintelligence/aga-mcp-server) | policy gate | TypeScript | sealed references | Unknown | Unknown | https://github.com/attestedintelligence/aga-mcp-server |
-| `audit-ledger-mcp` (shahidh68) | audit ledger | Unknown | hashed PII + S3 Object Lock | Unknown | Unknown | https://github.com/shahidh68/audit-ledger-mcp |
-| `Xiid` | network access control | proprietary | Unknown | Unknown | Unknown | https://xiid.com |
-| `Zyvra` | EU AI Act SaaS | Unknown | Unknown | Unknown | Unknown | https://zyvra.tech |
-| `Omega` (arXiv 2512.05951) | academic hardware attestation | SEV-SNP / H100 | Unknown | Unknown | Unknown | https://arxiv.org/abs/2512.05951 |
-| Observability (LangSmith / Langfuse / AgentOps / Arize Phoenix / Helicone) | observability | various | Unknown | Unknown | adjacent context, not evidence-ledger | https://docs.smith.langchain.com |
-| Provenance (in-toto / Sigstore/cosign / Witness / SLSA) | provenance | various | Unknown | Unknown | adjacent context, not evidence-ledger | https://in-toto.io |
-| Sandboxes (e2b / Modal / Daytona) | sandboxes | various | Unknown | Unknown | adjacent context, not evidence-ledger | https://e2b.dev |
+| Feature | PolyForge | agent-gate | AttestMCP | AGA MCP | audit-ledger-mcp | Xiid | Zyvra | Omega | Observability | Provenance | Sandboxes |
+| ------- | --------- | ---------- | --------- | ------- | ---------------- | ---- | ----- | ------ | ------------- | ---------- | --------- |
+| Tamper-evident ledger | ✅ | ✅ | ✅ | ✅ | ✅ | ? | ? | ? | ? | ? | ? |
+| Deterministic gate | ✅ | ✅ | ? | ✅ | ? | ? | ? | ? | ? | ? | ? |
+| MCP interface | ✅ | ? | ✅ | ✅ | ✅ | ? | ? | ? | ? | ? | ? |
+| CLI | ✅ | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
+| Open source | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ? | ? | ? | ? | ? |
+| Rust | ✅ | ❌ | ❌ | ❌ | ? | ? | ? | ? | ? | ? | ? |
+| Tri-state evidence model | ✅ | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
+| Fail-closed on integrity break | ✅ | ✅ | ? | ? | ? | ? | ? | ? | ? | ? | ? |
+| Evidence bundle output | ✅ | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? |
+| Hardware attestation | ❌ | ? | ? | ? | ? | ? | ? | ✅ | ? | ? | ? |
+| SaaS / hosted | ❌ | ? | ? | ? | ? | ? | ✅ | ? | ? | ? | ? |
+
+Legend: ✅ = feature confirmed by the cited source · ❌ = source explicitly states the
+feature is absent · `?` = source is silent (unknown).
+
+Sources (accessed 2026-08-09):
+
+1. `agent-gate` — Jott2121/agent-gate — https://github.com/Jott2121/agent-gate
+2. `AttestMCP` — attestmcp/attestmcp — https://github.com/attestmcp/attestmcp
+3. `AGA MCP` — attestedintelligence/aga-mcp-server — https://github.com/attestedintelligence/aga-mcp-server
+4. `audit-ledger-mcp` — shahidh68/audit-ledger-mcp — https://github.com/shahidh68/audit-ledger-mcp
+5. `Xiid` — https://xiid.com
+6. `Zyvra` — https://zyvra.tech
+7. `Omega` — arXiv 2512.05951 — https://arxiv.org/abs/2512.05951
+8. `Observability` — LangSmith / Langfuse / AgentOps / Arize Phoenix / Helicone — https://docs.smith.langchain.com, https://helicone.ai
+9. `Provenance` — in-toto / Sigstore/cosign / Witness / SLSA — https://in-toto.io
+10. `Sandboxes` — e2b / Modal / Daytona — https://e2b.dev
 
 Taken together: among the direct evidence-ledger tools surveyed on 2026-08-09, PolyForge is
 the only Rust crate-workspace combining a single-format Merkle ledger, a deterministic gate,
