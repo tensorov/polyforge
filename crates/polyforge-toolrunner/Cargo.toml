@@ -6,6 +6,9 @@ rust-version.workspace = true
 description = "Allowlisted, typed-argument, no-shell command runner producing verified tool attestations"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["runner", "allowlist", "attestation", "sandbox", "cli"]
+categories = ["development-tools", "command-line-utilities"]
 
 [lib]
 name = "polyforge_toolrunner"

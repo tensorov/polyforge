@@ -6,6 +6,9 @@ rust-version.workspace = true
 description = "PolyForge CLI: init, append, gate with reproducible evidence bundles"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["cli", "ledger", "sha256", "verification", "gate"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 polyforge-core = { path = "../../crates/polyforge-core" }

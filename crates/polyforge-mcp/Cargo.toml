@@ -6,6 +6,9 @@ rust-version.workspace = true
 description = "MCP server exposing the PolyForge evidence ledger and completion gate over stdio (rmcp)"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["mcp", "model-context-protocol", "server", "stdio", "ledger"]
+categories = ["development-tools", "web-programming"]
 
 [dependencies]
 polyforge-core = { path = "../polyforge-core" }

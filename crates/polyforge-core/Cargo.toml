@@ -6,6 +6,9 @@ rust-version.workspace = true
 description = "Tamper-evident append-only SHA-256 evidence ledger with tri-state verification for AI-driven engineering workflows"
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["ledger", "sha256", "tamper-evident", "evidence", "audit"]
+categories = ["development-tools", "cryptography"]
 
 [lib]
 name = "polyforge_core"
