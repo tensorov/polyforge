@@ -182,6 +182,19 @@ cargo run -p polyforge-core --example ledger_flow
 An optional ledger path argument selects the ledger file (a unique temp path is used by
 default).
 
+## Performance
+
+Measured on this machine with the release binary and a fresh ledger in `/tmp/pf-bench`:
+
+| Scenario | Value | How to reproduce |
+| -------- | ----- | ---------------- |
+| 100-task full chain (300 ledger appends) | 0.510 s | `time ( for i in $(seq 1 100); do polyforge-cli append model_claim "bench claim $i" --task task$i --commit c$i --diff d$i >/dev/null; polyforge-cli append tool_attestation "ran" --task task$i >/dev/null; polyforge-cli append validation "op" --task task$i >/dev/null; done )` |
+| 100 gate checks over a 300-entry ledger | 0.500 s | `time ( for i in $(seq 1 100); do polyforge-cli gate task$i --required validated >/dev/null; done )` |
+| Release binary size | 774664 B | `stat -c%s target/release/polyforge-cli` |
+| Full clean rebuild (`cargo clean` + `cargo build --release`) | 34.15 s | `cargo clean && time cargo build --release` |
+
+All numbers were measured on this machine with the release binary; the rebuilt binary is byte-identical to the one measured above.
+
 ## License
 
 PolyForge is licensed under the [Apache License, Version 2.0](LICENSE). See the
