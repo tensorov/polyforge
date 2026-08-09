@@ -272,6 +272,32 @@ Measured on this machine with the release binary and a fresh ledger in `/tmp/pf-
 
 All numbers were measured on this machine with the release binary; the rebuilt binary is byte-identical to the one measured above.
 
+## Why it matters
+
+PolyForge is a single-format evidence ledger: one append-only Merkle chain, one tri-state
+entry model, one deterministic gate. The table below surveys the direct evidence-ledger and
+MCP tools found on 2026-08-09, plus three adjacent categories for context. Among the direct
+evidence-ledger tools surveyed, PolyForge is the only Rust crate-workspace observed; the
+rest are single-language or proprietary. Facts come from each project's public page; where
+a source is silent the cell reads "Unknown".
+
+| Project | Category | Stack | Tamper-evident | Gate | Notes | Source (accessed 2026-08-09) |
+| ------- | -------- | ----- | -------------- | ---- | ----- | ----------------------------- |
+| `agent-gate` (Jott2121/agent-gate) | hash-chained receipts | Python | hash-chained receipts | 5-check gate | fail-closed checklist | https://github.com/Jott2121/agent-gate |
+| `AttestMCP` (attestmcp/attestmcp) | MCP proxy | Python | chained hashes | Unknown | Unknown | https://github.com/attestmcp/attestmcp |
+| `AGA MCP Server` (attestedintelligence/aga-mcp-server) | policy gate | TypeScript | sealed references | Unknown | Unknown | https://github.com/attestedintelligence/aga-mcp-server |
+| `audit-ledger-mcp` (shahidh68) | audit ledger | Unknown | hashed PII + S3 Object Lock | Unknown | Unknown | https://github.com/shahidh68/audit-ledger-mcp |
+| `Xiid` | network access control | proprietary | Unknown | Unknown | Unknown | https://xiid.com |
+| `Zyvra` | EU AI Act SaaS | Unknown | Unknown | Unknown | Unknown | https://zyvra.tech |
+| `Omega` (arXiv 2512.05951) | academic hardware attestation | SEV-SNP / H100 | Unknown | Unknown | Unknown | https://arxiv.org/abs/2512.05951 |
+| Observability (LangSmith / Langfuse / AgentOps / Arize Phoenix / Helicone) | observability | various | Unknown | Unknown | adjacent context, not evidence-ledger | https://docs.smith.langchain.com |
+| Provenance (in-toto / Sigstore/cosign / Witness / SLSA) | provenance | various | Unknown | Unknown | adjacent context, not evidence-ledger | https://in-toto.io |
+| Sandboxes (e2b / Modal / Daytona) | sandboxes | various | Unknown | Unknown | adjacent context, not evidence-ledger | https://e2b.dev |
+
+Taken together: among the direct evidence-ledger tools surveyed on 2026-08-09, PolyForge is
+the only Rust crate-workspace combining a single-format Merkle ledger, a deterministic gate,
+and an MCP interface in one workspace.
+
 ## License
 
 PolyForge is licensed under the [Apache License, Version 2.0](LICENSE). See the
