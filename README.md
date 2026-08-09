@@ -158,6 +158,83 @@ Four tools:
 | `gate_evaluate`    | —                  | Evaluate the gate for a task (read-only).                        |
 | `gate_report`      | —                  | Report gate/evidence state (read-only).                          |
 
+## Agent integration
+
+Each agent below registers the same `polyforge-mcp` server over stdio. The server reads
+`PF_MCP_TRANSPORT` (default `stdio`), `PF_MCP_ADDR` (default `127.0.0.1:18888`), and
+`PF_MCP_LEDGER` (default `.omo/ledger.jsonl`) — see [Connecting the MCP army](#connecting-the-mcp-army).
+
+### OpenCode
+
+`opencode.json` (project root or `~/.config/opencode/`):
+
+```json
+{
+  "mcp": {
+    "polyforge": {
+      "type": "local",
+      "command": ["polyforge-mcp"],
+      "env": {
+        "PF_MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+### Claude Code
+
+```sh
+claude mcp add polyforge -- polyforge-mcp
+```
+
+Or `.mcp.json` in the project root:
+
+```json
+{
+  "mcpServers": {
+    "polyforge": {
+      "command": "polyforge-mcp",
+      "args": [],
+      "env": {
+        "PF_MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+### Codex
+
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.polyforge]
+command = "polyforge-mcp"
+env = { PF_MCP_TRANSPORT = "stdio" }
+```
+
+### OpenClaw
+
+`~/.openclaw/config.json` — example, adjust path:
+
+```json
+{
+  "mcpServers": {
+    "polyforge": {
+      "command": "polyforge-mcp",
+      "args": [],
+      "env": {
+        "PF_MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+Make sure `polyforge-mcp` is on `PATH`, or point `command` at the full path to
+`target/release/polyforge-mcp`.
+
 ## Tamper / rewind guarantee
 
 The ledger is an append-only Merkle chain: every entry commits to the hash of the previous
