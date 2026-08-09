@@ -2,6 +2,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tensorov/polyforge/actions/workflows/ci.yml/badge.svg)](https://github.com/tensorov/polyforge/actions)
+[![Rust 1.85](https://img.shields.io/badge/rust-1.85-informational?logo=rust)](https://www.rust-lang.org)
 
 ## Demo
 
@@ -80,6 +81,8 @@ cargo test --workspace
 ```
 
 ## Quick start
+
+![PolyForge CLI demo](assets/readme/cli-demo.svg)
 
 The sequence below was run verbatim against the real binary, every command exiting 0:
 
