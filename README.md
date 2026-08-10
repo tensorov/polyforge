@@ -315,6 +315,20 @@ Taken together: among the direct evidence-ledger tools surveyed on 2026-08-09, P
 the only Rust crate-workspace combining a single-format Merkle ledger, a deterministic gate,
 and an MCP interface in one workspace.
 
+## Roadmap
+
+Production-readiness path — full detail in [docs/ROADMAP.md](docs/ROADMAP.md). Priorities are
+driven by two constraints: attestations must be ungameable and reproducible (trust first), and
+PolyForge gates its own development (dogfooding).
+
+| Phase | What it unlocks | Key items |
+| ----- | --------------- | --------- |
+| 0 — Trust hardening + self-gating | Gates that cannot be gamed, on environments that cannot be faked | Mutation testing (`cargo-mutants`, Stryker), Nix/Devbox fingerprints, `polyforge-action` self-gating on this repo |
+| 1 — Adoption | PolyForge as a standard part of any team's workflow | `tensorov/polyforge-action`, featured MCP server + Computer Use, Python/TS toolrunner, "LazyForge" TUI, Cline/Aider/Cursor prompts |
+| 2 — Scale & observability | Fleets of hundreds of agents with evidence as first-class observability | Remote backend (PostgreSQL + S3/DynamoDB), web dashboard + REST/gRPC API, OpenTelemetry exporter, LangGraph/CrewAI/AutoGen middleware |
+| 3 — Enterprise & ecosystem | Gates that pass enterprise and regulated scrutiny | SLSA/in-toto/Sigstore, deep plugins (Cursor/Windsurf/Continue.dev), web human-in-the-loop, Policy-as-Code |
+| Moonshot backlog | Trust at the hardware level; attestations as a market | Verification marketplace, TEE / hardware attestations |
+
 ## License
 
 PolyForge is licensed under the [Apache License, Version 2.0](LICENSE). See the
