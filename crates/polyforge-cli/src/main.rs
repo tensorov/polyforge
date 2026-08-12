@@ -1,15 +1,15 @@
 //! polyforge-cli — PolyForge command-line interface.
 //!
 //! Subcommands:
-//!   pf init                 create the ledger at `.omo/ledger.jsonl` if missing (idempotent)
+//!   pf init                 create the ledger at `.pf/ledger.jsonl` if missing (idempotent)
 //!   pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]
 //!                           append an evidence entry to the ledger
 //!   pf ledger tail          print the last entry's hash (ChainState.head_hash)
 //!   pf gate <task_id> [--required verified,validated]
 //!                           run evaluate_complete; on PASS write a reproducible bundle
 //!
-//! Ledger path: default `.omo/ledger.jsonl`, overridable via `PF_LEDGER`.
-//! Evidence dir: default `.omo/evidence/`, overridable via `PF_EVIDENCE_DIR`.
+//! Ledger path: default `.pf/ledger.jsonl`, overridable via `PF_LEDGER`.
+//! Evidence dir: default `.pf/evidence/`, overridable via `PF_EVIDENCE_DIR`.
 //!
 //! Tri-state honesty: `pf append tool_attestation` and `pf append validation`
 //! do NOT fabricate state. They locate the latest eligible entry for the task
@@ -27,8 +27,8 @@ use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceState};
 use polyforge_core::gate::{evaluate_complete, Evaluation, GateError};
 use polyforge_core::ledger::{EvidenceEntry as LedgerEntry, Ledger};
 
-const DEFAULT_LEDGER: &str = ".omo/ledger.jsonl";
-const DEFAULT_EVIDENCE_DIR: &str = ".omo/evidence/";
+const DEFAULT_LEDGER: &str = ".pf/ledger.jsonl";
+const DEFAULT_EVIDENCE_DIR: &str = ".pf/evidence/";
 
 fn ledger_path() -> PathBuf {
     match env::var("PF_LEDGER") {
@@ -482,7 +482,26 @@ fn print_usage() {
          \x20 pf gate <task_id> [--required verified,validated]\n\
          \n\
          env:\n\
-         \x20 PF_LEDGER        ledger path (default .omo/ledger.jsonl)\n\
-         \x20 PF_EVIDENCE_DIR  evidence dir (default .omo/evidence/)"
+         \x20 PF_LEDGER        ledger path (default .pf/ledger.jsonl)\n\
+         \x20 PF_EVIDENCE_DIR  evidence dir (default .pf/evidence/)"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{evidence_dir, ledger_path};
+    use std::path::PathBuf;
+
+    /// With no PF_LEDGER/PF_EVIDENCE_DIR overrides, the compiled-in defaults
+    /// must resolve under `.pf/` — the tracked runtime home (C7 relocation).
+    #[test]
+    fn test_default_paths_resolve_under_pf() {
+        // Clear any ambient overrides so this test exercises the defaults
+        // regardless of the invoking shell's environment.
+        std::env::remove_var("PF_LEDGER");
+        std::env::remove_var("PF_EVIDENCE_DIR");
+
+        assert_eq!(ledger_path(), PathBuf::from(".pf/ledger.jsonl"));
+        assert_eq!(evidence_dir(), PathBuf::from(".pf/evidence/"));
+    }
 }
