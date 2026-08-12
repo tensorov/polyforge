@@ -195,6 +195,7 @@ fn state_of(entry: &LedgerEntry) -> Option<EvidenceState> {
         "ModelClaimed" => Some(EvidenceState::ModelClaimed),
         "Verified" => Some(EvidenceState::Verified),
         "Validated" => Some(EvidenceState::Validated),
+        "Refuted" => Some(EvidenceState::Refuted),
         _ => None,
     }
 }
@@ -346,6 +347,60 @@ mod tests {
         assert_eq!(
             a, c,
             "same evidence sequence must yield the same gate verdict"
+        );
+    }
+
+    fn discrepancy(task: &str, exit_code: i32) -> TriState {
+        TriState::discrepancy(
+            task,
+            "abc123",
+            "diff-1",
+            "cargo test",
+            exit_code,
+            "boom",
+            "toolrunner:cargo",
+            "ts-4",
+        )
+    }
+
+    #[test]
+    fn test_state_of_maps_refuted() {
+        let entry = discrepancy("T4", 1).to_ledger_entry();
+        assert_eq!(state_of(&entry), Some(EvidenceState::Refuted));
+    }
+
+    #[test]
+    fn test_gate_claim_plus_discrepancy_never_passes() {
+        // claim + Discrepancy only: the claim is tri-state evidence (no
+        // TaskNotFound), but Refuted never advances the gate.
+        let path = tmp_path("refuted");
+        let mut ledger = Ledger::new(&path);
+        let c = claim("T4");
+        let d = promote(&c, &discrepancy("T4", 1)).unwrap();
+        ledger.append(c.to_ledger_entry()).unwrap();
+        ledger.append(d.to_ledger_entry()).unwrap();
+
+        let eval = evaluate_complete(&ledger, "T4", &[EvidenceState::Verified]).unwrap();
+        assert!(!eval.passed);
+        assert_eq!(eval.counts.verified, 0);
+        assert_eq!(eval.counts.claimed, 1);
+        assert_eq!(eval.missing, vec!["Verified"]);
+    }
+
+    #[test]
+    fn test_gate_discrepancy_only_is_task_not_found() {
+        // A task whose only entries are Discrepancy/Refuted has no tri-state
+        // evidence: refutations are recorded but never satisfy a gate.
+        let path = tmp_path("refuted-only");
+        let mut ledger = Ledger::new(&path);
+        ledger
+            .append(discrepancy("T4", 1).to_ledger_entry())
+            .unwrap();
+
+        let err = evaluate_complete(&ledger, "T4", &[EvidenceState::Verified]).unwrap_err();
+        assert!(
+            matches!(err, GateError::TaskNotFound { .. }),
+            "discrepancy-only task must be TaskNotFound, got {err:?}"
         );
     }
 
