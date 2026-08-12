@@ -3,6 +3,8 @@
 //! Subcommands:
 //!   pf init                 create the ledger at `.pf/ledger.jsonl` if missing (idempotent)
 //!   pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]
+//!                           [--experiment <id>] [--model <fp>] [--run <id>]
+//!                           [--budget <amt>] [--metadata <json>]
 //!                           append an evidence entry to the ledger
 //!   pf ledger tail          print the last entry's hash (ChainState.head_hash)
 //!   pf gate <task_id> [--required verified,validated]
@@ -11,10 +13,11 @@
 //! Ledger path: default `.pf/ledger.jsonl`, overridable via `PF_LEDGER`.
 //! Evidence dir: default `.pf/evidence/`, overridable via `PF_EVIDENCE_DIR`.
 //!
-//! Tri-state honesty: `pf append tool_attestation` and `pf append validation`
-//! do NOT fabricate state. They locate the latest eligible entry for the task
-//! (ModelClaimed for an attestation, Verified for a validation) and promote it
-//! through `polyforge_core::evidence::promote` — the single gatekeeper enforcing the
+//! Tri-state honesty: `pf append tool_attestation`, `pf append eval_attestation`
+//! and `pf append discrepancy` do NOT fabricate state. They locate the latest
+//! eligible entry for the task (ModelClaimed for an attestation/discrepancy,
+//! Verified for a validation) and promote it through
+//! `polyforge_core::evidence::promote` — the single gatekeeper enforcing the
 //! claim -> verified -> validated chain. A bare attestation with no prior claim
 //! is rejected.
 
@@ -81,9 +84,21 @@ fn parse_kind(kind: &str) -> Result<&'static str, String> {
     match kind {
         "model_claim" => Ok("model_claim"),
         "tool_attestation" => Ok("tool_attestation"),
+        "eval_attestation" => Ok("eval_attestation"),
+        "discrepancy" => Ok("discrepancy"),
         "validation" => Ok("validation"),
         other => Err(format!("unknown evidence kind: {other}")),
     }
+}
+
+/// Optional eval identity fields, record-only (never enforced).
+#[derive(Default)]
+struct IdentityFlags {
+    experiment_id: Option<String>,
+    model_fingerprint: Option<String>,
+    run_id: Option<String>,
+    budget: Option<String>,
+    eval_metadata: Option<serde_json::Value>,
 }
 
 fn cmd_append(
@@ -92,6 +107,7 @@ fn cmd_append(
     task_id: &str,
     commit: Option<&str>,
     diff: Option<&str>,
+    identity: IdentityFlags,
 ) -> Result<(), String> {
     parse_kind(kind)?;
     let mut ledger = Ledger::new(ledger_path());
@@ -102,7 +118,13 @@ fn cmd_append(
             let diff_hash = diff.unwrap_or("none");
             // The CLI operator supplies the claim datum (payload) as the opaque
             // caller-supplied `ts` field. It is DATA only — never executed.
-            EvidenceEntry::new_claim(task_id, commit_sha, diff_hash, payload)
+            let mut claim = EvidenceEntry::new_claim(task_id, commit_sha, diff_hash, payload);
+            claim.experiment_id = identity.experiment_id;
+            claim.model_fingerprint = identity.model_fingerprint;
+            claim.run_id = identity.run_id;
+            claim.budget = identity.budget;
+            claim.eval_metadata = identity.eval_metadata;
+            claim
         }
         "tool_attestation" => {
             // Honest tri-state: locate the latest ModelClaimed entry and promote
@@ -122,6 +144,48 @@ fn cmd_append(
                 payload,
             );
             promote(&claim, &attestation).map_err(|e| format!("promotion rejected: {e:?}"))?
+        }
+        "eval_attestation" => {
+            // Operator-side eval attestation: locate the latest ModelClaimed
+            // entry and promote it to Verified, carrying the optional eval
+            // identity fields. Mirrors the tool_attestation path.
+            let claim = latest_state_of_state(&ledger, task_id, "ModelClaimed")?
+                .ok_or_else(|| format!("no ModelClaimed entry for task {task_id} to attest"))?;
+            let attestation = EvidenceEntry::eval_attestation(
+                task_id,
+                &claim.commit_sha,
+                &claim.diff_hash,
+                "polyforge-cli-1.95.0",
+                env::var("PF_ENV_FINGERPRINT").unwrap_or_else(|_| "cli".to_string()),
+                payload,
+                0,
+                "none",
+                identity.experiment_id,
+                identity.model_fingerprint,
+                identity.run_id,
+                identity.budget,
+                identity.eval_metadata,
+                payload,
+            );
+            promote(&claim, &attestation).map_err(|e| format!("promotion rejected: {e:?}"))?
+        }
+        "discrepancy" => {
+            // Operator-side refutation trace: locate the latest ModelClaimed
+            // entry and promote it to Refuted. The payload is the trace datum
+            // (ts slot); the operator identity is recorded as the validator.
+            let claim = latest_state_of_state(&ledger, task_id, "ModelClaimed")?
+                .ok_or_else(|| format!("no ModelClaimed entry for task {task_id} to refute"))?;
+            let discrepancy = EvidenceEntry::discrepancy(
+                task_id,
+                &claim.commit_sha,
+                &claim.diff_hash,
+                payload,
+                1,
+                payload,
+                "polyforge-cli-operator",
+                payload,
+            );
+            promote(&claim, &discrepancy).map_err(|e| format!("promotion rejected: {e:?}"))?
         }
         "validation" => {
             let verified = latest_state_of_state(&ledger, task_id, "Verified")?
@@ -394,13 +458,14 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
         }
         "append" => {
             if args.len() < 3 {
-                return Err("usage: pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]".to_string());
+                return Err("usage: pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>] [--experiment <id>] [--model <fp>] [--run <id>] [--budget <amt>] [--metadata <json>]".to_string());
             }
             let kind = args[1].clone();
             let payload = args[2].clone();
             let mut task_id = "default".to_string();
             let mut commit = None;
             let mut diff = None;
+            let mut identity = IdentityFlags::default();
             let mut i = 3;
             while i < args.len() {
                 match args[i].as_str() {
@@ -425,6 +490,44 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
                         }
                         diff = Some(args[i].clone());
                     }
+                    "--experiment" => {
+                        i += 1;
+                        if i >= args.len() {
+                            return Err("--experiment requires a value".to_string());
+                        }
+                        identity.experiment_id = Some(args[i].clone());
+                    }
+                    "--model" => {
+                        i += 1;
+                        if i >= args.len() {
+                            return Err("--model requires a value".to_string());
+                        }
+                        identity.model_fingerprint = Some(args[i].clone());
+                    }
+                    "--run" => {
+                        i += 1;
+                        if i >= args.len() {
+                            return Err("--run requires a value".to_string());
+                        }
+                        identity.run_id = Some(args[i].clone());
+                    }
+                    "--budget" => {
+                        i += 1;
+                        if i >= args.len() {
+                            return Err("--budget requires a value".to_string());
+                        }
+                        identity.budget = Some(args[i].clone());
+                    }
+                    "--metadata" => {
+                        i += 1;
+                        if i >= args.len() {
+                            return Err("--metadata requires a value".to_string());
+                        }
+                        identity.eval_metadata = Some(
+                            serde_json::from_str(&args[i])
+                                .map_err(|e| format!("--metadata must be valid JSON: {e}"))?,
+                        );
+                    }
                     other => return Err(format!("unknown flag: {other}")),
                 }
                 i += 1;
@@ -435,6 +538,7 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
                 &task_id,
                 commit.as_deref(),
                 diff.as_deref(),
+                identity,
             )?;
             Ok(ExitCode::SUCCESS)
         }
@@ -478,8 +582,11 @@ fn print_usage() {
          usage:\n\
          \x20 pf init\n\
          \x20 pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]\n\
+         \x20              [--experiment <id>] [--model <fp>] [--run <id>] [--budget <amt>] [--metadata <json>]\n\
          \x20 pf ledger tail\n\
          \x20 pf gate <task_id> [--required verified,validated]\n\
+         \n\
+         kinds: model_claim | tool_attestation | eval_attestation | discrepancy | validation\n\
          \n\
          env:\n\
          \x20 PF_LEDGER        ledger path (default .pf/ledger.jsonl)\n\

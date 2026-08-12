@@ -103,6 +103,22 @@ fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
+/// Every ledger entry as parsed JSON, in seq order.
+fn ledger_entries(env: &Env) -> Vec<serde_json::Value> {
+    let raw = std::fs::read_to_string(&env.ledger).expect("read ledger");
+    raw.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("ledger line is JSON"))
+        .collect()
+}
+
+fn entry_by_kind(env: &Env, kind: &str) -> serde_json::Value {
+    ledger_entries(env)
+        .into_iter()
+        .find(|e| e["kind"].as_str() == Some(kind))
+        .unwrap_or_else(|| panic!("no {kind} entry in ledger"))
+}
+
 fn is_hex64(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -217,5 +233,191 @@ fn test_army_rewind_fails_cycle() {
     assert!(
         !env.manifest("T11B").exists(),
         "no manifest may be fabricated on an integrity failure"
+    );
+}
+
+#[test]
+fn test_army_eval_attestation_identity_roundtrip() {
+    let env = Env::new();
+    assert_ok(&pf(&env, &["init"]), "pf init");
+    assert_ok(
+        &pf(
+            &env,
+            &[
+                "append",
+                "model_claim",
+                "claim-datum",
+                "--task",
+                "T4E",
+                "--commit",
+                "abc123",
+                "--diff",
+                "d1",
+                "--experiment",
+                "exp-1",
+                "--model",
+                "mf-1",
+                "--run",
+                "run-1",
+                "--budget",
+                "0.50 usd",
+                "--metadata",
+                r#"{"pass@1":0.8}"#,
+            ],
+        ),
+        "pf append model_claim with identity flags",
+    );
+    assert_ok(
+        &pf(
+            &env,
+            &[
+                "append",
+                "eval_attestation",
+                "eval ran",
+                "--task",
+                "T4E",
+                "--experiment",
+                "exp-1",
+                "--model",
+                "mf-1",
+                "--run",
+                "run-1",
+                "--budget",
+                "0.50 usd",
+                "--metadata",
+                r#"{"pass@1":0.8}"#,
+            ],
+        ),
+        "pf append eval_attestation with identity flags",
+    );
+
+    // The claim carries the identity fields verbatim.
+    let claim = entry_by_kind(&env, "ModelClaim");
+    assert_eq!(claim["payload"]["experiment_id"], "exp-1");
+    assert_eq!(claim["payload"]["model_fingerprint"], "mf-1");
+    assert_eq!(claim["payload"]["run_id"], "run-1");
+    assert_eq!(claim["payload"]["budget"], "0.50 usd");
+    assert_eq!(
+        claim["payload"]["eval_metadata"],
+        serde_json::json!({ "pass@1": 0.8 })
+    );
+
+    // The promoted EvalAttestation is Verified and round-trips the identity
+    // fields (promote copies them from the attestation).
+    let eval = entry_by_kind(&env, "EvalAttestation");
+    assert_eq!(eval["payload"]["state"], "Verified");
+    assert_eq!(eval["payload"]["task_id"], "T4E");
+    assert_eq!(eval["payload"]["experiment_id"], "exp-1");
+    assert_eq!(eval["payload"]["model_fingerprint"], "mf-1");
+    assert_eq!(eval["payload"]["run_id"], "run-1");
+    assert_eq!(eval["payload"]["budget"], "0.50 usd");
+    assert_eq!(
+        eval["payload"]["eval_metadata"],
+        serde_json::json!({ "pass@1": 0.8 })
+    );
+
+    // An eval-attested task is gateable as verified.
+    assert_ok(
+        &pf(&env, &["gate", "T4E", "--required", "verified"]),
+        "pf gate T4E --required verified",
+    );
+}
+
+#[test]
+fn test_army_discrepancy_promotes_to_refuted() {
+    let env = Env::new();
+    assert_ok(&pf(&env, &["init"]), "pf init");
+    assert_ok(
+        &pf(
+            &env,
+            &[
+                "append",
+                "model_claim",
+                "claim-datum",
+                "--task",
+                "T4D",
+                "--commit",
+                "abc123",
+                "--diff",
+                "d1",
+            ],
+        ),
+        "pf append model_claim",
+    );
+    assert_ok(
+        &pf(
+            &env,
+            &["append", "discrepancy", "trace data", "--task", "T4D"],
+        ),
+        "pf append discrepancy",
+    );
+
+    let disc = entry_by_kind(&env, "Discrepancy");
+    assert_eq!(disc["payload"]["state"], "Refuted");
+    assert_eq!(disc["payload"]["task_id"], "T4D");
+    assert_eq!(disc["payload"]["rationale"], "trace data");
+    assert_eq!(disc["payload"]["validator"], "polyforge-cli-operator");
+    assert_eq!(disc["payload"]["exit_code"], 1);
+
+    // A Refuted task must NOT pass a verified gate (record-only in M1).
+    let out = pf(&env, &["gate", "T4D", "--required", "verified"]);
+    assert_eq!(
+        exit_code(&out),
+        1,
+        "Refuted task must fail a verified gate\nstderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn test_army_identity_flags_absent_are_null() {
+    let env = Env::new();
+    assert_ok(&pf(&env, &["init"]), "pf init");
+    assert_ok(
+        &pf(
+            &env,
+            &["append", "model_claim", "claim-datum", "--task", "T4N"],
+        ),
+        "pf append model_claim",
+    );
+    assert_ok(
+        &pf(
+            &env,
+            &["append", "eval_attestation", "eval ran", "--task", "T4N"],
+        ),
+        "pf append eval_attestation",
+    );
+
+    for e in ledger_entries(&env) {
+        assert_eq!(e["payload"]["experiment_id"], serde_json::Value::Null);
+        assert_eq!(e["payload"]["model_fingerprint"], serde_json::Value::Null);
+        assert_eq!(e["payload"]["run_id"], serde_json::Value::Null);
+        assert_eq!(e["payload"]["budget"], serde_json::Value::Null);
+        assert_eq!(e["payload"]["eval_metadata"], serde_json::Value::Null);
+    }
+}
+
+#[test]
+fn test_army_usage_shows_new_kinds_and_pf_defaults() {
+    let env = Env::new();
+    // No args -> print_usage on stderr, exit 2.
+    let out = pf(&env, &[]);
+    assert_eq!(exit_code(&out), 2, "no args must print usage and exit 2");
+    let err = stderr(&out);
+    assert!(
+        err.contains("eval_attestation"),
+        "usage must list eval_attestation, got: {err}"
+    );
+    assert!(
+        err.contains("discrepancy"),
+        "usage must list discrepancy, got: {err}"
+    );
+    assert!(
+        err.contains(".pf/ledger.jsonl"),
+        "usage must show the .pf/ ledger default, got: {err}"
+    );
+    assert!(
+        err.contains(".pf/evidence/"),
+        "usage must show the .pf/ evidence default, got: {err}"
     );
 }
