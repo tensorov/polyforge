@@ -7,22 +7,42 @@
 //! `Verified` entry back to the ledger.
 //!
 //! Invariants:
-//! * Nothing is promoted without a successful (exit 0) tool run.
+//! * Nothing is promoted to `Verified` without a successful (exit 0) tool run.
+//! * A failed (non-zero exit) tool run appends a `Discrepancy`/`Refuted` trace
+//!   recording tool, exit code, and truncated stderr — the failure itself is
+//!   evidence — before the caller receives `ToolFailed`.
 //! * The model never passes raw shell strings: args go through the runner's
 //!   typed-arg validation and the binary is spawned directly (no shell).
 //! * No wall-clock: the attestation reuses the claim's `ts` datum.
-//! * A failed gate leaves the ledger untouched (zero partial writes).
+//! * The chain is verified before any append (zero partial writes on
+//!   integrity failure).
 
 use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceKind, EvidenceState};
 use polyforge_core::ledger::{EntryId, EvidenceEntry as LedgerEntry, Ledger};
 
 use crate::runner::{run, RunnerError, Tool};
 
+/// Maximum number of stderr bytes recorded in the ledger for a failed run.
+const STDERR_LEDGER_LIMIT: usize = 2048;
+
+/// Cap a string at `limit` bytes, never splitting a UTF-8 codepoint.
+fn truncate(s: &str, limit: usize) -> String {
+    if s.len() <= limit {
+        return s.to_string();
+    }
+    let mut end = limit;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
 /// Verify a claim by running an allowlisted tool, then append the promoted
 /// `Verified` entry to the ledger.
 ///
 /// `claim_id` is the ledger sequence number of the `ModelClaimed` entry.
-/// The tool must exit 0; any other exit is a failure and nothing is appended.
+/// The tool must exit 0; any other exit is a failure that appends a
+/// `Discrepancy`/`Refuted` trace before the caller receives `ToolFailed`.
 pub fn verify_and_append(
     ledger: &mut Ledger,
     task_id: &str,
@@ -36,9 +56,25 @@ pub fn verify_and_append(
         .map_err(|e| RunnerError::Ledger(format!("{e:?}")))?;
     let output = run(tool, args)?;
     if output.exit_code != 0 {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let discrepancy = EvidenceEntry::discrepancy(
+            claim.task_id.clone(),
+            claim.commit_sha.clone(),
+            claim.diff_hash.clone(),
+            output.command.clone(),
+            output.exit_code,
+            truncate(&stderr, STDERR_LEDGER_LIMIT),
+            format!("toolrunner:{}", tool.name),
+            claim.ts.clone(),
+        );
+        let refuted =
+            promote(&claim, &discrepancy).map_err(|e| RunnerError::Promote(format!("{e:?}")))?;
+        ledger
+            .append(refuted.to_ledger_entry())
+            .map_err(|e| RunnerError::Ledger(format!("{e:?}")))?;
         return Err(RunnerError::ToolFailed {
             exit_code: output.exit_code,
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            stderr: truncate(&stderr, STDERR_LEDGER_LIMIT),
         });
     }
     let attestation = output.to_attestation(
@@ -172,6 +208,50 @@ mod tests {
     }
 
     #[test]
+    fn test_failed_run_appends_discrepancy_entry() {
+        let path = tmp_path("discrepancy");
+        let mut ledger = Ledger::new(&path);
+        let claim_id = append_claim(&mut ledger, "T6");
+
+        let err = verify_and_append(
+            &mut ledger,
+            "T6",
+            claim_id,
+            &tool("cargo build"),
+            &["--definitely-not-a-flag".to_string()],
+        )
+        .unwrap_err();
+        assert!(matches!(err, RunnerError::ToolFailed { .. }));
+
+        let entries = ledger.iter_entries().unwrap();
+        assert_eq!(entries.len(), 2, "failed run must append a Discrepancy");
+        assert_eq!(entries[1].kind, "Discrepancy");
+        assert_eq!(entries[1].payload["state"], "Refuted");
+        assert_eq!(entries[1].payload["task_id"], "T6");
+        assert_eq!(entries[1].payload["validator"], "toolrunner:cargo build");
+        let rationale = entries[1].payload["rationale"].as_str().unwrap();
+        assert!(rationale.len() <= 2048, "stderr must be truncated ~2KB");
+        assert!(!rationale.is_empty());
+        ledger.verify_chain().unwrap();
+    }
+
+    #[test]
+    fn test_failed_run_without_claim_appends_nothing() {
+        let path = tmp_path("discrepancy-no-claim");
+        let mut ledger = Ledger::new(&path);
+        let err = verify_and_append(
+            &mut ledger,
+            "T6",
+            0,
+            &tool("cargo build"),
+            &["--definitely-not-a-flag".to_string()],
+        )
+        .unwrap_err();
+        assert!(matches!(err, RunnerError::ClaimNotFound(0)));
+        assert!(ledger.iter_entries().unwrap().is_empty());
+    }
+
+    #[test]
     fn test_verify_promotes_claim_with_tool_attestation() {
         let path = tmp_path("promote");
         let mut ledger = Ledger::new(&path);
@@ -221,8 +301,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, RunnerError::ToolFailed { .. }));
         let entries = ledger.iter_entries().unwrap();
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].kind, "ModelClaim");
+        assert_eq!(entries[1].kind, "Discrepancy");
+        assert_eq!(entries[1].payload["state"], "Refuted");
     }
 
     #[test]
