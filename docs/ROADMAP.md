@@ -29,7 +29,7 @@ The goal: attestations stop being gameable, and PolyForge starts gating its own 
 |---|------|-----|
 | 0.1 | Mutation testing in the toolrunner allowlist: `cargo-mutants` (Rust), `stryker` (JS) + a coverage floor on the gate | An agent can delete or comment out a test and still pass `cargo test`. Mutation testing breaks the code and checks whether the tests react. Without it, the whole trust system is fiction. |
 | 0.2 | **Nix / Devbox fingerprinting**: flake hash / derivation recorded in `ToolAttestation`; lockfile pinning (`uv.lock`, `pnpm-lock`) | "It works on my machine" ≠ it works in production. An environment hash closes the reproducibility question — the README already promises per-command fingerprints; extend it to Nix. |
-| 0.3 | **GitHub Action `polyforge-action` + required status check on the polyforge repo itself** | Dogfooding from day one: every PR to this project runs `polyforge gate`, reads `.omo/ledger.jsonl`, validates the Merkle chain, cross-checks commit hashes. This is both adoption item #1 and the self-improvement mechanism. |
+| 0.3 | **GitHub Action `polyforge-action` + required status check on the polyforge repo itself** | Dogfooding from day one: every PR to this project runs `polyforge gate`, reads `.pf/ledger.jsonl`, validates the Merkle chain and the committed ledger anchor. This is both adoption item #1 and the self-improvement mechanism. |
 | 0.4 | PR comment summary: "`NN tasks verified, M validated, K failed`" | Turns PolyForge into an indispensable part of the workflow, not an interesting toy. |
 
 **Exit criteria:** a polyforge PR cannot merge without a valid chain and a passing gate;

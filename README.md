@@ -114,8 +114,8 @@ The `--required` flag takes a comma-list such as `verified,validated`.
 
 Environment variables:
 
-- `PF_LEDGER` — ledger path (default `.omo/ledger.jsonl`).
-- `PF_EVIDENCE_DIR` — directory for gate bundles and manifests (default `.omo/evidence/`).
+- `PF_LEDGER` — ledger path (default `.pf/ledger.jsonl`).
+- `PF_EVIDENCE_DIR` — directory for gate bundles and manifests (default `.pf/evidence/`).
 
 ## Running a gate
 
@@ -147,7 +147,7 @@ Transport configuration:
 - `PF_MCP_TRANSPORT=stdio` (default) — MCP over standard input/output.
 - `PF_MCP_TRANSPORT=tcp` — MCP over TCP; bind address via `PF_MCP_ADDR`
   (default `127.0.0.1:18888`).
-- `PF_MCP_LEDGER` — ledger path (default `.omo/ledger.jsonl`).
+- `PF_MCP_LEDGER` — ledger path (default `.pf/ledger.jsonl`).
 
 Four tools:
 
@@ -162,7 +162,7 @@ Four tools:
 
 Each agent below registers the same `polyforge-mcp` server over stdio. The server reads
 `PF_MCP_TRANSPORT` (default `stdio`), `PF_MCP_ADDR` (default `127.0.0.1:18888`), and
-`PF_MCP_LEDGER` (default `.omo/ledger.jsonl`) — see [Connecting the MCP army](#connecting-the-mcp-army).
+`PF_MCP_LEDGER` (default `.pf/ledger.jsonl`) — see [Connecting the MCP army](#connecting-the-mcp-army).
 
 ### OpenCode
 
