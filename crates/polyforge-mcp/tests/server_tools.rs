@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use polyforge_core::ledger::Ledger;
 use polyforge_mcp::server::PolyForgeServer;
 use rmcp::{
     model::*,
@@ -47,9 +48,11 @@ fn temp_ledger() -> PathBuf {
 }
 
 /// Run `body` against a live server/client pair over an in-memory duplex.
+/// The body also receives the temp ledger path so tests can inspect the
+/// appended entries directly.
 async fn with_pair<F, Fut>(body: F) -> anyhow::Result<()>
 where
-    F: FnOnce(RunningService<RoleClient, TestClient>) -> Fut,
+    F: FnOnce(RunningService<RoleClient, TestClient>, PathBuf) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     let ledger = temp_ledger();
@@ -75,7 +78,7 @@ where
                 Some(client_peer_info.into()),
             );
 
-            let result = body(client).await;
+            let result = body(client, ledger).await;
 
             server_task.abort();
             result
@@ -95,7 +98,7 @@ async fn call_tool(
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_server_lists_tools() -> anyhow::Result<()> {
-    with_pair(|client| async move {
+    with_pair(|client, _ledger| async move {
         let result = client.list_tools(None).await?;
         let mut names: Vec<String> = result.tools.iter().map(|t| t.name.to_string()).collect();
         names.sort();
@@ -115,7 +118,7 @@ async fn test_server_lists_tools() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_evidence_append_roundtrip() -> anyhow::Result<()> {
-    with_pair(|client| async move {
+    with_pair(|client, _ledger| async move {
         let result = call_tool(
             &client,
             "evidence_append",
@@ -144,7 +147,7 @@ async fn test_evidence_append_roundtrip() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_claim_cannot_self_verify_via_mcp() -> anyhow::Result<()> {
-    with_pair(|client| async move {
+    with_pair(|client, _ledger| async move {
         // A model cannot append a ToolAttestation (self-verification).
         let result = call_tool(
             &client,
@@ -171,7 +174,7 @@ async fn test_claim_cannot_self_verify_via_mcp() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_evidence_verify_roundtrip() -> anyhow::Result<()> {
-    with_pair(|client| async move {
+    with_pair(|client, _ledger| async move {
         // 1. Append a claim.
         let append = call_tool(
             &client,
@@ -215,7 +218,7 @@ async fn test_evidence_verify_roundtrip() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_gate_evaluate_roundtrip() -> anyhow::Result<()> {
-    with_pair(|client| async move {
+    with_pair(|client, _ledger| async move {
         // 1. Append a claim.
         let append = call_tool(
             &client,
@@ -272,6 +275,113 @@ async fn test_gate_evaluate_roundtrip() -> anyhow::Result<()> {
         assert_eq!(after_json["passed"], true);
         assert_eq!(after_json["verified"], 1);
         assert_eq!(after_json["missing"], json!([]));
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_evidence_append_roundtrips_identity_fields() -> anyhow::Result<()> {
+    with_pair(|client, ledger_path| async move {
+        let result = call_tool(
+            &client,
+            "evidence_append",
+            json!({
+                "kind": "ModelClaim",
+                "payload": "{}",
+                "task_id": "task-5",
+                "commit_sha": "abc123",
+                "diff_hash": "def456",
+                "experiment_id": "exp-1",
+                "model_fingerprint": "fp-abc",
+                "run_id": "run-9",
+                "budget": "$5",
+                "eval_metadata": {"metric": 0.9},
+            }),
+        )
+        .await?;
+        let text = result.content[0].as_text().unwrap().text.clone();
+        let parsed: serde_json::Value = serde_json::from_str(&text)?;
+        assert_eq!(parsed["kind"], "ModelClaim");
+        assert_eq!(parsed["state"], "ModelClaimed");
+
+        let ledger = Ledger::new(&ledger_path);
+        let entries = ledger
+            .iter_entries()
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let entry = entries.first().unwrap();
+        assert_eq!(entry.payload["experiment_id"], json!("exp-1"));
+        assert_eq!(entry.payload["model_fingerprint"], json!("fp-abc"));
+        assert_eq!(entry.payload["run_id"], json!("run-9"));
+        assert_eq!(entry.payload["budget"], json!("$5"));
+        assert_eq!(entry.payload["eval_metadata"], json!({"metric": 0.9}));
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_evidence_append_absent_identity_fields_default_null() -> anyhow::Result<()> {
+    with_pair(|client, ledger_path| async move {
+        let result = call_tool(
+            &client,
+            "evidence_append",
+            json!({
+                "kind": "ModelClaim",
+                "payload": "{}",
+                "task_id": "task-5",
+                "commit_sha": "abc123",
+                "diff_hash": "def456",
+            }),
+        )
+        .await?;
+        let text = result.content[0].as_text().unwrap().text.clone();
+        let parsed: serde_json::Value = serde_json::from_str(&text)?;
+        assert_eq!(parsed["kind"], "ModelClaim");
+
+        let ledger = Ledger::new(&ledger_path);
+        let entries = ledger
+            .iter_entries()
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let entry = entries.first().unwrap();
+        assert_eq!(entry.payload["experiment_id"], serde_json::Value::Null);
+        assert_eq!(entry.payload["model_fingerprint"], serde_json::Value::Null);
+        assert_eq!(entry.payload["run_id"], serde_json::Value::Null);
+        assert_eq!(entry.payload["budget"], serde_json::Value::Null);
+        assert_eq!(entry.payload["eval_metadata"], serde_json::Value::Null);
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_new_kinds_still_rejected_via_mcp() -> anyhow::Result<()> {
+    with_pair(|client, _ledger| async move {
+        for kind in [
+            "EvalAttestation",
+            "Discrepancy",
+            "ToolAttestation",
+            "Validation",
+        ] {
+            let result = call_tool(
+                &client,
+                "evidence_append",
+                json!({
+                    "kind": kind,
+                    "payload": "{}",
+                    "task_id": "task-5",
+                    "commit_sha": "abc123",
+                    "diff_hash": "def456",
+                }),
+            )
+            .await;
+            let err = result.expect_err("non-ModelClaim kind must be rejected");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("only accepts kind=ModelClaim"),
+                "kind {kind} rejected with unexpected error: {msg}"
+            );
+        }
         Ok(())
     })
     .await

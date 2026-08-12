@@ -56,8 +56,11 @@ fn parse_state(s: &str) -> Result<EvidenceState, ErrorData> {
         "ModelClaimed" => Ok(EvidenceState::ModelClaimed),
         "Verified" => Ok(EvidenceState::Verified),
         "Validated" => Ok(EvidenceState::Validated),
+        "Refuted" => Ok(EvidenceState::Refuted),
         other => Err(ErrorData::invalid_params(
-            format!("unknown evidence state {other:?} (expected ModelClaimed|Verified|Validated)"),
+            format!(
+                "unknown evidence state {other:?} (expected ModelClaimed|Verified|Validated|Refuted)"
+            ),
             None,
         )),
     }
@@ -76,6 +79,21 @@ pub struct EvidenceAppendParams {
     pub task_id: String,
     pub commit_sha: String,
     pub diff_hash: String,
+    /// Optional eval experiment id (record-only, never enforced).
+    #[serde(default)]
+    pub experiment_id: Option<String>,
+    /// Optional model fingerprint (record-only, never enforced).
+    #[serde(default)]
+    pub model_fingerprint: Option<String>,
+    /// Optional eval run id (record-only, never enforced).
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Optional budget datum (record-only, never enforced).
+    #[serde(default)]
+    pub budget: Option<String>,
+    /// Optional eval metadata blob (record-only, never enforced).
+    #[serde(default)]
+    pub eval_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -181,12 +199,17 @@ impl PolyForgeServer {
                 None,
             ));
         }
-        let claim = polyforge_core::evidence::EvidenceEntry::new_claim(
+        let mut claim = polyforge_core::evidence::EvidenceEntry::new_claim(
             arguments.task_id.clone(),
             arguments.commit_sha.clone(),
             arguments.diff_hash.clone(),
             now_ts(),
         );
+        claim.experiment_id = arguments.experiment_id;
+        claim.model_fingerprint = arguments.model_fingerprint;
+        claim.run_id = arguments.run_id;
+        claim.budget = arguments.budget;
+        claim.eval_metadata = arguments.eval_metadata;
         let mut ledger_entry = claim.to_ledger_entry();
         // Store the caller's payload verbatim (data only, never interpreted).
         ledger_entry.payload["payload"] = json!(arguments.payload);
@@ -348,5 +371,26 @@ impl PolyForgeServer {
                 })
                 .collect(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_state_accepts_all_four_states() {
+        assert_eq!(
+            parse_state("ModelClaimed").unwrap(),
+            EvidenceState::ModelClaimed
+        );
+        assert_eq!(parse_state("Verified").unwrap(), EvidenceState::Verified);
+        assert_eq!(parse_state("Validated").unwrap(), EvidenceState::Validated);
+        assert_eq!(parse_state("Refuted").unwrap(), EvidenceState::Refuted);
+    }
+
+    #[test]
+    fn parse_state_rejects_unknown_state() {
+        assert!(parse_state("SomethingElse").is_err());
     }
 }
