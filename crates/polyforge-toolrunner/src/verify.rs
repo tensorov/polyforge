@@ -131,6 +131,13 @@ fn tri_state_from_ledger(entry: &LedgerEntry) -> Result<EvidenceEntry, RunnerErr
             .as_str()
             .unwrap_or_default()
             .to_string(),
+        experiment_id: entry.payload["experiment_id"].as_str().map(str::to_string),
+        model_fingerprint: entry.payload["model_fingerprint"]
+            .as_str()
+            .map(str::to_string),
+        run_id: entry.payload["run_id"].as_str().map(str::to_string),
+        budget: entry.payload["budget"].as_str().map(str::to_string),
+        eval_metadata: entry.payload.get("eval_metadata").cloned(),
         ts: entry.ts.clone(),
     })
 }

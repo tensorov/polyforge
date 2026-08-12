@@ -240,6 +240,10 @@ fn latest_state_of_state(
                     rationale,
                     &le.ts,
                 ),
+                // Unreachable: the pre-filter above only selects entries whose
+                // payload state matches the requested `state` string, and
+                // `parse_required` never accepts a Refuted requirement.
+                EvidenceState::Refuted => unreachable!("Refuted is never requested by the CLI"),
             }
         }))
 }

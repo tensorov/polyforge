@@ -47,6 +47,8 @@ impl Counts {
             EvidenceState::ModelClaimed => self.claimed,
             EvidenceState::Verified => self.verified,
             EvidenceState::Validated => self.validated,
+            // Refuted entries are recorded but do not advance gates in M1.
+            EvidenceState::Refuted => 0,
         }
     }
 }
@@ -160,6 +162,8 @@ pub fn evaluate_complete(
             EvidenceState::ModelClaimed => counts.claimed += 1,
             EvidenceState::Verified => counts.verified += 1,
             EvidenceState::Validated => counts.validated += 1,
+            // Refuted entries are recorded but never counted toward a gate.
+            EvidenceState::Refuted => {}
         }
     }
 
