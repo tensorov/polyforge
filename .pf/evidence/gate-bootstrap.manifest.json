@@ -1,0 +1,10 @@
+{
+  "bundle_sha256": "c0a1c78863e3aec5ce95f1fa13aebb14a01cf00bb54c969926955603fb69d802",
+  "passed": true,
+  "tail_hash": "7cd20ccca4e882710d707048264be10410cde80764b960de80aee13e0ec4c3bc",
+  "task_id": "bootstrap",
+  "tool_versions": {
+    "cargo": "1.95.0",
+    "rustc": "1.95.0"
+  }
+}
