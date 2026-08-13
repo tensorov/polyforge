@@ -31,3 +31,94 @@ runs:
         LEDGER_PATH: ${{ inputs.ledger-path }}
         EVIDENCE_DIR: ${{ inputs.evidence-dir }}
       run: "$GITHUB_ACTION_PATH/entrypoint.sh"
+
+    # C4.2: PR-only gate summary comment; push/schedule stays silent, failures hard-error.
+    - name: Capture ledger summary
+      if: github.event_name == 'pull_request'
+      id: summary
+      shell: bash
+      env:
+        LEDGER_PATH: ${{ inputs.ledger-path }}
+      run: |
+        set -euo pipefail
+        : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE must be set (repo root)}"
+        # Same binary resolution as entrypoint.sh: workspace binary first,
+        # then PATH. The gate step already required one of the two, so a
+        # missing CLI here is a hard error, never a silent empty comment.
+        WS_BIN="$GITHUB_WORKSPACE/target/debug/polyforge-cli"
+        if [[ -x "$WS_BIN" ]]; then
+          CLI="$WS_BIN"
+        else
+          CLI="$(command -v polyforge-cli)"
+          if [[ -z "$CLI" ]]; then
+            echo "::error::polyforge-cli not found after gate PASSED" >&2
+            exit 1
+          fi
+        fi
+        LEDGER="$GITHUB_WORKSPACE/$LEDGER_PATH"
+        SUMMARY="$(env -i PATH="$PATH" HOME="$HOME" PF_LEDGER="$LEDGER" "$CLI" ledger summary)"
+        echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+    - name: Parse gate manifest facts
+      if: github.event_name == 'pull_request'
+      id: manifest
+      shell: bash
+      env:
+        TASK_ID: ${{ inputs.task-id }}
+        EVIDENCE_DIR: ${{ inputs.evidence-dir }}
+      run: |
+        set -euo pipefail
+        : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE must be set (repo root)}"
+        # Manifest path resolution (Metis MINOR #14): exactly
+        #   ${{ inputs.evidence-dir }}/gate-${{ inputs.task-id }}.manifest.json
+        # no hardcoded .pf/evidence/ - the gate step writes into PF_EVIDENCE_DIR
+        # which equals inputs.evidence-dir. evidence-dir may carry a trailing
+        # slash (default is .pf/evidence/) - strip it before joining.
+        EVIDENCE_DIR="${EVIDENCE_DIR%/}"
+        MANIFEST="$GITHUB_WORKSPACE/$EVIDENCE_DIR/gate-$TASK_ID.manifest.json"
+        if [[ ! -f "$MANIFEST" ]]; then
+          echo "::error::gate manifest missing: $MANIFEST" >&2
+          exit 1
+        fi
+        PASSED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["passed"])' "$MANIFEST")"
+        TAIL_HASH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tail_hash"])' "$MANIFEST")"
+        BUNDLE_SHA256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bundle_sha256"])' "$MANIFEST")"
+        echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
+        echo "tail_hash=$TAIL_HASH" >> "$GITHUB_OUTPUT"
+        echo "bundle_sha256=$BUNDLE_SHA256" >> "$GITHUB_OUTPUT"
+
+    - name: Post gate summary PR comment
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      env:
+        GATE_SUMMARY: ${{ steps.summary.outputs.summary }}
+        GATE_PASSED: ${{ steps.manifest.outputs.passed }}
+        GATE_TAIL_HASH: ${{ steps.manifest.outputs.tail_hash }}
+        GATE_BUNDLE_SHA256: ${{ steps.manifest.outputs.bundle_sha256 }}
+      with:
+        script: |
+          const summary = process.env.GATE_SUMMARY;
+          const passed = process.env.GATE_PASSED;
+          const tailHash = process.env.GATE_TAIL_HASH;
+          const bundleSha = process.env.GATE_BUNDLE_SHA256;
+          if (!summary || !passed || !tailHash || !bundleSha) {
+            core.setFailed('missing ledger summary or gate manifest facts');
+            return;
+          }
+          const body = [
+            '## PolyForge gate result',
+            '',
+            '```',
+            summary,
+            '```',
+            '',
+            `passed: ${passed}`,
+            `tail_hash: ${tailHash}`,
+            `bundle_sha256: ${bundleSha}`,
+          ].join('\n');
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body,
+          });
