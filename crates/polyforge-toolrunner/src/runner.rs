@@ -6,7 +6,11 @@
 //! `sh -c` / `bash -c` / `/bin/sh`.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
 
 use polyforge_core::evidence::EvidenceEntry;
 use sha2::{Digest, Sha256};
@@ -69,6 +73,9 @@ pub enum RunnerError {
     Spawn(String),
     /// Reading the child output failed.
     Io(String),
+    /// The tool did not finish within the configured wall-clock budget; its
+    /// process group was killed and its output discarded.
+    TimedOut { timeout_secs: u64 },
     /// No `ModelClaimed` entry exists at the requested ledger sequence (or it
     /// is not a claim for this task).
     ClaimNotFound(u64),
@@ -79,6 +86,12 @@ pub enum RunnerError {
     /// A ledger read / integrity / append operation failed.
     Ledger(String),
 }
+
+/// Default wall-clock budget for a tool run, in seconds.
+pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 3600;
+
+/// Environment variable overriding the default tool timeout (seconds).
+pub const PF_TOOL_TIMEOUT_SECS: &str = "PF_TOOL_TIMEOUT_SECS";
 
 /// The v1 allowlist. Add more tools here as the project grows.
 pub fn allowlist() -> Vec<Tool> {
@@ -139,16 +152,33 @@ pub fn spawn(tool: &Tool, args: &[String]) -> Result<Child, RunnerError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The tool leads its own process group so a wall-clock timeout can kill
+    // the whole tree (grandchildren holding the output pipes included).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     cmd.spawn().map_err(|e| RunnerError::Spawn(e.to_string()))
 }
 
 /// Run an allowlisted tool to completion and capture its output + attestation
-/// fields.
+/// fields, bounded by the `PF_TOOL_TIMEOUT_SECS` wall-clock budget (default
+/// [`DEFAULT_TOOL_TIMEOUT_SECS`]). A tool that outlives the budget is killed
+/// together with its process group and the run fails with
+/// [`RunnerError::TimedOut`].
 pub fn run(tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
+    run_with_timeout(tool, args, parse_timeout())
+}
+
+/// Like [`run`], but with an explicit wall-clock budget.
+pub fn run_with_timeout(
+    tool: &Tool,
+    args: &[String],
+    timeout: Duration,
+) -> Result<RunOutput, RunnerError> {
     let child = spawn(tool, args)?;
-    let out = child
-        .wait_with_output()
-        .map_err(|e| RunnerError::Io(e.to_string()))?;
+    let out = wait_with_timeout(child, timeout)?;
     let exit_code = out.status.code().unwrap_or(-1);
     let stdout_hash = sha256_hex(&out.stdout);
     let tool_version = tool_version(&tool.bin);
@@ -163,6 +193,74 @@ pub fn run(tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
         tool_version,
         command,
     })
+}
+
+/// Wait for a spawned child to finish, but no longer than `timeout`. A
+/// watchdog thread sleeps for the budget and, on expiry, SIGKILLs the child's
+/// whole process group so grandchildren holding the output pipes cannot keep
+/// the caller blocked past the deadline. Returns [`RunnerError::TimedOut`]
+/// when the budget was exceeded; the child's output is discarded in that case.
+pub fn wait_with_timeout(child: Child, timeout: Duration) -> Result<Output, RunnerError> {
+    let pid = child.id();
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&timed_out);
+    let (tx, rx) = mpsc::channel::<()>();
+    let watchdog = thread::spawn(move || match rx.recv_timeout(timeout) {
+        // The child finished first; the watchdog exits without killing.
+        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            flag.store(true, Ordering::SeqCst);
+            kill_process_group(pid);
+        }
+    });
+    let out = child
+        .wait_with_output()
+        .map_err(|e| RunnerError::Io(e.to_string()))?;
+    // Cancel the watchdog so it never kills a recycled pid after a normal exit.
+    let _ = tx.send(());
+    let _ = watchdog.join();
+    if timed_out.load(Ordering::SeqCst) {
+        return Err(RunnerError::TimedOut {
+            timeout_secs: timeout.as_secs(),
+        });
+    }
+    Ok(out)
+}
+
+/// Read the `PF_TOOL_TIMEOUT_SECS` wall-clock budget (seconds). Missing,
+/// unparsable, or non-positive values fall back to
+/// [`DEFAULT_TOOL_TIMEOUT_SECS`].
+pub fn parse_timeout() -> Duration {
+    parse_timeout_from(std::env::var(PF_TOOL_TIMEOUT_SECS).ok().as_deref())
+}
+
+/// Pure core of [`parse_timeout`]: `None` or an invalid value yields the
+/// default; a positive integer yields that many seconds.
+fn parse_timeout_from(value: Option<&str>) -> Duration {
+    match value.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(secs) if secs > 0 => Duration::from_secs(secs),
+        _ => Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS),
+    }
+}
+
+/// SIGKILL the process group led by `pid` (the child spawned with
+/// `process_group(0)`). Errors are ignored: the only goal is to release the
+/// output pipes so the blocked `wait_with_output` returns.
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    // SAFETY: `pid` came from a live Child we spawned into its own process
+    // group; killpg takes a pid_t and a signal. Failure (ESRCH etc.) is
+    // ignored by design.
+    unsafe {
+        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+/// Non-Unix fallback: no process-group kill in std; best effort on the parent
+/// process only.
+#[cfg(not(unix))]
+fn kill_process_group(pid: u32) {
+    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
 }
 
 /// Reject shell metacharacters in typed args. This is a shape check, not
@@ -705,5 +803,99 @@ mod tests {
             "unexpected error: {err:?}"
         );
         assert!(!pwned.exists(), "shell-interpolated arg must never execute");
+    }
+
+    #[test]
+    fn test_parse_timeout_defaults_and_overrides() {
+        let default = Duration::from_secs(DEFAULT_TOOL_TIMEOUT_SECS);
+        assert_eq!(parse_timeout_from(None), default);
+        assert_eq!(parse_timeout_from(Some("5")), Duration::from_secs(5));
+        assert_eq!(parse_timeout_from(Some(" 10 ")), Duration::from_secs(10));
+        assert_eq!(parse_timeout_from(Some("0")), default);
+        assert_eq!(parse_timeout_from(Some("-3")), default);
+        assert_eq!(parse_timeout_from(Some("abc")), default);
+    }
+
+    /// Spawn a raw child (bypassing the allowlist) into its own process group,
+    /// mirroring what `spawn` does in production.
+    #[cfg(unix)]
+    fn spawn_raw(args: &[&str]) -> Child {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..]);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.process_group(0);
+        cmd.spawn().expect("raw child spawned")
+    }
+
+    #[test]
+    fn test_hanging_tool_times_out() {
+        let child = spawn_raw(&["sleep", "30"]);
+        let start = std::time::Instant::now();
+        let err = wait_with_timeout(child, Duration::from_millis(500)).unwrap_err();
+        assert!(
+            matches!(err, RunnerError::TimedOut { .. }),
+            "expected TimedOut, got {err:?}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "timeout must fire well before the tool would exit: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn test_timeout_kills_process_tree() {
+        // The direct child `sh` waits on a background `sleep` that inherits the
+        // output pipes; without a process-group kill the pipes would stay open
+        // and wait_with_timeout would block past the deadline.
+        let pid_file = std::env::temp_dir().join(format!("pf-killpg-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pid_file);
+        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let child = spawn_raw(&["sh", "-c", &script]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !pid_file.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "grandchild pid never recorded"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let start = std::time::Instant::now();
+        let err = wait_with_timeout(child, Duration::from_millis(500)).unwrap_err();
+        assert!(matches!(err, RunnerError::TimedOut { .. }));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        let pid_text = std::fs::read_to_string(&pid_file).expect("grandchild pid recorded");
+        let grandchild: u32 = pid_text.trim().parse().expect("numeric pid");
+        let gone = std::time::Instant::now();
+        loop {
+            if !std::path::Path::new(&format!("/proc/{grandchild}")).exists() {
+                break;
+            }
+            assert!(
+                gone.elapsed() < Duration::from_secs(5),
+                "grandchild {grandchild} survived the process-group kill"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_file(&pid_file);
+    }
+
+    #[test]
+    fn test_wait_with_timeout_normal_completion() {
+        let child = spawn_raw(&["printf", "hello"]);
+        let out = wait_with_timeout(child, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hello");
+    }
+
+    #[test]
+    fn test_run_with_timeout_allowlisted_tool() {
+        let t = tool("cargo --version");
+        let out = run_with_timeout(&t, &[], Duration::from_secs(60)).unwrap();
+        assert!(out.exit_code == 0);
+        assert_eq!(out.stdout_hash.len(), 64);
     }
 }
