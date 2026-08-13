@@ -25,11 +25,14 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: PolyForge self-gate (read-only)
-        run: |
-          cargo build -p polyforge-cli
-          ./target/debug/polyforge-cli ledger tail
-          PF_EVIDENCE_DIR=/tmp/pf-ci-evidence ./target/debug/polyforge-cli gate bootstrap --required verified
+      - name: Build CLI (for self-gate)
+        run: cargo build -p polyforge-cli
+
+      - name: PolyForge self-gate
+        uses: ./.github/actions/polyforge
+        with:
+          task-id: bootstrap
+          required: verified
 
   coverage:
     if: github.event_name != 'schedule'
