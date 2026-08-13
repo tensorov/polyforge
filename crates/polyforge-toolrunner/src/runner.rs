@@ -179,24 +179,138 @@ fn validate_arg(tool: &str, arg: &str) -> Result<(), RunnerError> {
     Ok(())
 }
 
-/// Stable SHA-256 over tool version + os + arch + sorted env var names + PATH.
-/// Changes when the tool version or PATH changes; stable across identical runs.
+/// Stable fingerprint over tool version + os + arch + sorted env var names +
+/// PATH, with a fixed-order self-describing tail that folds in Nix/Devbox
+/// identity and lockfile hashes when present:
+///
+/// `<base-hex>|nix=<none|digest>|devbox=<none|sha256>|cargo.lock=<sha256>`
+///
+/// `base-hex` is the pre-C2.1 formula unchanged (SHA-256 over tool version +
+/// os + arch + sorted env var names + PATH). The tail is appended verbatim in
+/// fixed order; the `cargo.lock` section is unconditional. Changes when the
+/// tool version, PATH, Nix store paths, `devbox.lock`, or the repo-root
+/// `Cargo.lock` change; byte-stable across identical runs.
 pub fn env_fingerprint(tool_version: &str) -> String {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let mut names: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
-    names.sort();
+    let names: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
     let path = std::env::var("PATH").unwrap_or_default();
+    let nix_segments = nix_segments_from_path(&path);
+    let root = repo_root();
+    // Both lockfiles are read relative to the repo root (walked up from
+    // CARGO_MANIFEST_DIR); a missing/unreadable file contributes `none`.
+    let devbox_bytes = root
+        .as_deref()
+        .and_then(|dir| std::fs::read(dir.join("devbox.lock")).ok());
+    let cargo_lock_bytes = root
+        .as_deref()
+        .and_then(|dir| std::fs::read(dir.join("Cargo.lock")).ok());
+    env_fingerprint_from(
+        tool_version,
+        names,
+        &path,
+        &nix_segments,
+        devbox_bytes.as_deref(),
+        cargo_lock_bytes.as_deref(),
+    )
+}
+
+/// Pure core of [`env_fingerprint`]: identical inputs produce byte-identical
+/// output. os/arch come from compile-time constants only; every environment
+/// and lockfile input is passed in so tests can drive synthetic vectors
+/// without touching the real environment or filesystem.
+fn env_fingerprint_from(
+    tool_version: &str,
+    env_names: Vec<String>,
+    path: &str,
+    nix_segments: &[String],
+    devbox_bytes: Option<&[u8]>,
+    cargo_lock_bytes: Option<&[u8]>,
+) -> String {
+    let mut names = env_names;
+    names.sort();
     let mut h = Sha256::new();
     h.update(tool_version.as_bytes());
-    h.update(os.as_bytes());
-    h.update(arch.as_bytes());
+    h.update(std::env::consts::OS.as_bytes());
+    h.update(std::env::consts::ARCH.as_bytes());
     for n in &names {
         h.update(n.as_bytes());
         h.update(b"\0");
     }
     h.update(path.as_bytes());
-    hex(&h.finalize())
+    let base = hex(&h.finalize());
+    format!(
+        "{base}|nix={}|devbox={}|cargo.lock={}",
+        nix_digest(nix_segments),
+        lock_section(devbox_bytes),
+        lock_section(cargo_lock_bytes),
+    )
+}
+
+/// `none` when no `/nix/store/` segments are present; otherwise the SHA-256 of
+/// the lexicographically-sorted segments joined with `|`. Sorting makes the
+/// digest independent of PATH order; a single-segment PATH behaves identically
+/// to the multi-segment algorithm on a one-element list.
+fn nix_digest(segments: &[String]) -> String {
+    if segments.is_empty() {
+        return "none".into();
+    }
+    let mut sorted = segments.to_vec();
+    sorted.sort();
+    sha256_hex(sorted.join("|").as_bytes())
+}
+
+/// Every `/nix/store/<32-char-Nix32>-<name>` segment of a PATH-style string
+/// (colon-separated). The 32-char hash field is validated against the Nix32
+/// charset (base-32: lowercase a-z + 0-9, minus e/o/u/t); the name is whatever
+/// follows the mandatory `-` and must be non-empty. Any segment failing the
+/// shape is ignored — this is a pure PATH parse, no subprocess.
+fn nix_segments_from_path(path: &str) -> Vec<String> {
+    path.split(':')
+        .filter(|seg| {
+            let Some(rest) = seg.strip_prefix("/nix/store/") else {
+                return false;
+            };
+            let Some((hash, name)) = rest.split_once('-') else {
+                return false;
+            };
+            hash.len() == 32 && !name.is_empty() && hash.bytes().all(is_nix32)
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Nix32 charset membership: base-32 (digits `0-9` plus lowercase `a-z`) with
+/// `e`, `o`, `u`, `t` excluded.
+fn is_nix32(c: u8) -> bool {
+    (c.is_ascii_digit() || c.is_ascii_lowercase()) && !matches!(c, b'e' | b'o' | b'u' | b't')
+}
+
+/// Literal `none` for an absent lockfile, else its SHA-256.
+fn lock_section(bytes: Option<&[u8]>) -> String {
+    match bytes {
+        Some(b) => sha256_hex(b),
+        None => "none".into(),
+    }
+}
+
+/// Locate the workspace root: walk up from `CARGO_MANIFEST_DIR` (falling back
+/// to the current directory) to the nearest ancestor whose `Cargo.toml` carries
+/// a `[workspace]` section. Both lockfiles are read relative to it.
+/// `CARGO_MANIFEST_DIR` is preferred over the process cwd because it is stable
+/// regardless of where the caller invokes the runner.
+fn repo_root() -> Option<PathBuf> {
+    let start = std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(|| std::env::current_dir().ok())?;
+    start
+        .ancestors()
+        .find(|dir| {
+            let manifest = dir.join("Cargo.toml");
+            std::fs::read_to_string(manifest)
+                .map(|text| text.contains("[workspace]"))
+                .unwrap_or(false)
+        })
+        .map(PathBuf::from)
 }
 
 /// Resolve a tool's version by running `<bin> --version`.
@@ -298,6 +412,195 @@ mod tests {
         let a = env_fingerprint("cargo-1.95.0");
         let b = env_fingerprint("cargo-1.95.0");
         assert_eq!(a, b);
+    }
+
+    /// Synthetic-input helper for the pure core: identical args → identical
+    /// fingerprint, with no real environment or filesystem access.
+    fn fp(
+        env_names: Vec<&str>,
+        path: &str,
+        nix: &[String],
+        devbox: Option<&[u8]>,
+        cargo: Option<&[u8]>,
+    ) -> String {
+        env_fingerprint_from(
+            "cargo-1.95.0",
+            env_names.into_iter().map(String::from).collect(),
+            path,
+            nix,
+            devbox,
+            cargo,
+        )
+    }
+
+    const NIX32_HASH: &str = "00000000000000000000000000000000";
+
+    fn nix_seg(name: &str) -> String {
+        format!("/nix/store/{NIX32_HASH}-{name}")
+    }
+
+    #[test]
+    fn test_fingerprint_changes_when_nix_devbox_cargo_added() {
+        let baseline = fp(
+            vec![],
+            "/usr/bin",
+            &[],
+            Some(b"devbox-lock-v1"),
+            Some(b"cargo-lock-v1"),
+        );
+        let seg = nix_seg("cargo-1.95.0");
+        let extended = fp(
+            vec![],
+            &format!("/usr/bin:{}", nix_seg("other")),
+            &[seg],
+            Some(b"devbox-lock-v2"),
+            Some(b"cargo-lock-v2"),
+        );
+        assert_ne!(
+            baseline, extended,
+            "nix+devbox+cargo change must alter the fingerprint"
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_identical_for_identical_inputs() {
+        let seg = nix_seg("a");
+        let a = fp(
+            vec!["CARGO_HOME", "RUSTUP_HOME"],
+            &format!("/usr/bin:{}", nix_seg("a")),
+            std::slice::from_ref(&seg),
+            Some(b"devbox-lock"),
+            Some(b"cargo-lock"),
+        );
+        let b = fp(
+            vec!["CARGO_HOME", "RUSTUP_HOME"],
+            &format!("/usr/bin:{}", nix_seg("a")),
+            std::slice::from_ref(&seg),
+            Some(b"devbox-lock"),
+            Some(b"cargo-lock"),
+        );
+        assert_eq!(
+            a, b,
+            "identical inputs must produce byte-equal fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_absent_nix_devbox_render_none_token_and_stay_byte_stable() {
+        let a = fp(vec![], "/usr/bin", &[], None, Some(b"cargo-lock"));
+        let b = fp(vec![], "/usr/bin", &[], None, Some(b"cargo-lock"));
+        assert_eq!(a, b, "structure is fixed; absent sections must not wobble");
+        let cargo_hex = sha256_hex(b"cargo-lock");
+        assert!(
+            a.ends_with(&format!("|nix=none|devbox=none|cargo.lock={cargo_hex}")),
+            "expected literal none tokens, got: {a}"
+        );
+        // base + tail: fingerprint is strictly longer than a bare 64-hex hash.
+        assert!(a.len() > 64);
+    }
+
+    #[test]
+    fn test_nix_digest_order_independent() {
+        let seg_a = nix_seg("aaa");
+        let seg_b = nix_seg("bbb");
+        // Same two segments in different PATH order → same parsed set → same digest.
+        let from_ab = nix_segments_from_path(&format!("{seg_a}:{seg_b}"));
+        let from_ba = nix_segments_from_path(&format!("{seg_b}:{seg_a}"));
+        assert_eq!(nix_digest(&from_ab), nix_digest(&from_ba));
+        // Multi-segment digest is symmetric under argument order too.
+        assert_eq!(
+            nix_digest(&[seg_a.clone(), seg_b.clone()]),
+            nix_digest(&[seg_b.clone(), seg_a.clone()])
+        );
+        // Single-segment PATH hashes identically to the multi-segment
+        // algorithm on a one-element list: sha256 of that one segment.
+        assert_eq!(
+            nix_digest(std::slice::from_ref(&seg_a)),
+            sha256_hex(seg_a.as_bytes())
+        );
+        // Full fingerprint: the nix section is byte-identical across PATH
+        // orders; the base hash differs only because PATH itself is hashed
+        // verbatim (pre-existing base-formula behavior).
+        let ab = fp(
+            vec![],
+            &format!("{seg_a}:{seg_b}"),
+            &from_ab,
+            None,
+            Some(b"cargo-lock"),
+        );
+        let ba = fp(
+            vec![],
+            &format!("{seg_b}:{seg_a}"),
+            &from_ba,
+            None,
+            Some(b"cargo-lock"),
+        );
+        let nix_ab = ab
+            .split("|nix=")
+            .nth(1)
+            .unwrap()
+            .split("|devbox=")
+            .next()
+            .unwrap();
+        let nix_ba = ba
+            .split("|nix=")
+            .nth(1)
+            .unwrap()
+            .split("|devbox=")
+            .next()
+            .unwrap();
+        assert_eq!(
+            nix_ab, nix_ba,
+            "nix section must be independent of PATH order"
+        );
+    }
+
+    #[test]
+    fn test_nix_segment_parser_validates_nix32_shape() {
+        let valid = nix_seg("cargo-1.95.0");
+        // 'e' is excluded from the Nix32 charset → invalid hash field.
+        let bad_char = "/nix/store/0000000000000000000000000000000e-ignored";
+        // Hash field too short to be a store path.
+        let too_short = "/nix/store/short-name";
+        // No '-' delimiter / empty name → not a store path.
+        let no_name = "/nix/store/00000000000000000000000000000000";
+        let empty_name = "/nix/store/00000000000000000000000000000000-";
+        let segments = nix_segments_from_path(&format!(
+            "/usr/bin:{valid}:{bad_char}:{too_short}:{no_name}:{empty_name}"
+        ));
+        assert_eq!(
+            segments,
+            vec![valid],
+            "only well-formed Nix32 segments are collected"
+        );
+    }
+
+    #[test]
+    fn test_attestation_carries_longer_composite_fingerprint() {
+        let t = tool("cargo --version");
+        let out = run(&t, &[]).unwrap();
+        let fp = &out.env_fingerprint;
+        assert!(
+            fp.len() > 64,
+            "fingerprint must be the composite base+tail, got len {}: {fp}",
+            fp.len()
+        );
+        assert!(fp.contains("|nix="), "fixed nix section present: {fp}");
+        assert!(
+            fp.contains("|devbox="),
+            "fixed devbox section present: {fp}"
+        );
+        assert!(
+            fp.contains("|cargo.lock="),
+            "fixed cargo.lock section present: {fp}"
+        );
+        // ToolAttestation JSON shows the longer fingerprint hash verbatim.
+        let att = out.to_attestation("C2.1", "abc", "diff", "ts");
+        let json = serde_json::to_string(&att).unwrap();
+        assert!(
+            json.contains(fp),
+            "attestation JSON must embed the fingerprint: {json}"
+        );
     }
 
     #[test]
