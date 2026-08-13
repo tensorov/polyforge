@@ -5,7 +5,7 @@
 //! anywhere: we spawn the binary directly via [`std::process::Command`], never
 //! `sh -c` / `bash -c` / `/bin/sh`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use polyforge_core::evidence::EvidenceEntry;
@@ -302,6 +302,12 @@ fn repo_root() -> Option<PathBuf> {
         .map(PathBuf::from)
         .ok()
         .or_else(|| std::env::current_dir().ok())?;
+    repo_root_from(&start)
+}
+
+/// Walk up from `start` to the nearest ancestor whose `Cargo.toml` carries a
+/// `[workspace]` section.
+fn repo_root_from(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .find(|dir| {
@@ -600,6 +606,67 @@ mod tests {
         assert!(
             json.contains(fp),
             "attestation JSON must embed the fingerprint: {json}"
+        );
+    }
+
+    #[test]
+    fn test_repo_root_from_finds_workspace_ancestor() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = repo_root_from(manifest_dir).expect("workspace root found");
+        let text = std::fs::read_to_string(root.join("Cargo.toml"))
+            .expect("workspace Cargo.toml readable");
+        assert!(
+            text.contains("[workspace]"),
+            "root {root:?} must carry a [workspace] section"
+        );
+        assert!(
+            manifest_dir.starts_with(&root),
+            "root {root:?} must be an ancestor of {manifest_dir:?}"
+        );
+    }
+
+    #[test]
+    fn test_repo_root_from_returns_none_without_workspace() {
+        let tmp = std::env::temp_dir().join(format!("pf-noroot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).expect("temp subdir created");
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"x\"\n")
+            .expect("temp manifest written");
+        assert_eq!(
+            repo_root_from(&tmp.join("sub")),
+            None,
+            "no [workspace] ancestor must yield None"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_repo_root_finds_real_workspace() {
+        let root = repo_root().expect("CARGO_MANIFEST_DIR walk-up finds the workspace");
+        let text = std::fs::read_to_string(root.join("Cargo.toml"))
+            .expect("workspace Cargo.toml readable");
+        assert!(
+            text.contains("[workspace]"),
+            "root {root:?} must carry a [workspace] section"
+        );
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            manifest_dir.starts_with(&root),
+            "root {root:?} must be an ancestor of {manifest_dir:?}"
+        );
+    }
+
+    #[test]
+    fn test_env_fingerprint_reads_real_workspace_lockfile() {
+        let fp = env_fingerprint("cargo-1.95.0");
+        let tail = fp
+            .split("|cargo.lock=")
+            .nth(1)
+            .expect("cargo.lock section present");
+        assert_eq!(tail.len(), 64, "real Cargo.lock sha256, not `none`: {fp}");
+        assert!(
+            tail.bytes().all(|b| b.is_ascii_hexdigit()),
+            "hex digest expected: {fp}"
         );
     }
 
