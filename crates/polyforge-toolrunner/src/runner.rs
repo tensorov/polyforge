@@ -108,6 +108,15 @@ pub fn allowlist() -> Vec<Tool> {
             bin: PathBuf::from("gcc"),
             args: vec!["-v".into()],
         },
+        // Mutation testing: `cargo-mutants` (install: `cargo install
+        // cargo-mutants --locked`, v27.1.0). CI installs it via
+        // `taiki-e/install-action@v2` with `tool: cargo-mutants`. Typed args
+        // only — e.g. `--version` — passed through `run`/`spawn`; no shell.
+        Tool {
+            name: "cargo-mutants".into(),
+            bin: PathBuf::from("cargo-mutants"),
+            args: vec![],
+        },
     ]
 }
 
@@ -289,5 +298,42 @@ mod tests {
         let a = env_fingerprint("cargo-1.95.0");
         let b = env_fingerprint("cargo-1.95.0");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_lookup_cargo_mutants() {
+        let t = lookup("cargo-mutants").expect("cargo-mutants on allowlist");
+        assert_eq!(t.name, "cargo-mutants");
+        assert_eq!(t.bin, PathBuf::from("cargo-mutants"));
+    }
+
+    #[test]
+    fn test_cargo_mutants_accepts_version_arg() {
+        // Shape check only: `--version` is a clean typed arg (no metacharacters).
+        assert!(validate_arg("cargo-mutants", "--version").is_ok());
+    }
+
+    #[test]
+    fn test_cargo_mutants_rejects_shell_interpolation() {
+        let pwned = std::path::Path::new("/tmp/pwned");
+        let _ = std::fs::remove_file(pwned);
+
+        // Semicolon chains commands; rejected outright, never passed to a shell.
+        let err = validate_arg("cargo-mutants", "--version; rm -rf /").unwrap_err();
+        assert!(matches!(err, RunnerError::InvalidArg { tool, .. } if tool == "cargo-mutants"));
+
+        // Command substitution is rejected in `spawn` before the binary is ever
+        // executed, so the substituted command must not run.
+        let t = tool("cargo-mutants");
+        let err = spawn(&t, &["$(touch /tmp/pwned)".to_string()]).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RunnerError::InvalidArg { ref tool, ref arg }
+                    if tool == "cargo-mutants" && arg == "$(touch /tmp/pwned)"
+            ),
+            "unexpected error: {err:?}"
+        );
+        assert!(!pwned.exists(), "shell-interpolated arg must never execute");
     }
 }
