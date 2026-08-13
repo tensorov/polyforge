@@ -1,0 +1,10 @@
+{
+  "bundle_sha256": "7178e7d85fcdfe8ec28a4aa91d2259729521924ea8f3e61add3d7632617e2f73",
+  "passed": true,
+  "tail_hash": "a2403c2c8b105200a77a3b7efce748ebd3062f520d6415726a2b5a308c639c6c",
+  "task_id": "p0-c3-2",
+  "tool_versions": {
+    "cargo": "1.95.0",
+    "rustc": "1.95.0"
+  }
+}
