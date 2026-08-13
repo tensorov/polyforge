@@ -7,6 +7,7 @@
 //!                           [--budget <amt>] [--metadata <json>]
 //!                           append an evidence entry to the ledger
 //!   pf ledger tail          print the last entry's hash (ChainState.head_hash)
+//!   pf ledger summary       print per-task counts (latest ledger state per task)
 //!   pf gate <task_id> [--required verified,validated]
 //!                           run evaluate_complete; on PASS write a reproducible bundle
 //!   pf coverage-check --report <llvm-cov.json>
@@ -324,6 +325,43 @@ fn cmd_ledger_tail() -> Result<(), String> {
         .verify_chain()
         .map_err(|e| format!("verify chain: {e:?}"))?;
     println!("{}", state.head_hash);
+    Ok(())
+}
+
+/// Print per-task state counts as one grep-able line, classifying each task
+/// by its latest ledger entry's payload state: Verified -> verified,
+/// Validated -> validated, any other state (bare ModelClaimed, Refuted,
+/// missing) -> failed. Read-only; an empty or missing ledger prints zeros.
+fn cmd_ledger_summary() -> Result<(), String> {
+    let ledger = Ledger::new(ledger_path());
+    let entries = ledger
+        .iter_entries()
+        .map_err(|e| format!("iter entries: {e:?}"))?;
+
+    let mut latest: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for e in &entries {
+        let Some(task) = e.payload.get("task_id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let state = e
+            .payload
+            .get("state")
+            .and_then(|v| v.as_str())
+            .unwrap_or("ModelClaimed");
+        latest.insert(task, state);
+    }
+
+    let mut verified = 0usize;
+    let mut validated = 0usize;
+    let mut failed = 0usize;
+    for state in latest.values() {
+        match *state {
+            "Verified" => verified += 1,
+            "Validated" => validated += 1,
+            _ => failed += 1,
+        }
+    }
+    println!("tasks_verified={verified} tasks_validated={validated} tasks_failed={failed}");
     Ok(())
 }
 
@@ -647,11 +685,20 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         "ledger" => {
-            if args.len() < 2 || args[1] != "tail" {
-                return Err("usage: pf ledger tail".to_string());
+            if args.len() < 2 {
+                return Err("usage: pf ledger <tail|summary>".to_string());
             }
-            cmd_ledger_tail()?;
-            Ok(ExitCode::SUCCESS)
+            match args[1].as_str() {
+                "tail" => {
+                    cmd_ledger_tail()?;
+                    Ok(ExitCode::SUCCESS)
+                }
+                "summary" => {
+                    cmd_ledger_summary()?;
+                    Ok(ExitCode::SUCCESS)
+                }
+                other => Err(format!("unknown ledger subcommand: {other}")),
+            }
         }
         "gate" => {
             if args.len() < 2 {
@@ -694,6 +741,7 @@ fn print_usage() {
          \x20 pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]\n\
          \x20              [--experiment <id>] [--model <fp>] [--run <id>] [--budget <amt>] [--metadata <json>]\n\
          \x20 pf ledger tail\n\
+         \x20 pf ledger summary\n\
          \x20 pf gate <task_id> [--required verified,validated]\n\
          \x20 pf coverage-check --report <llvm-cov.json>\n\
          \n\
