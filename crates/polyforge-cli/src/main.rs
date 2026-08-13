@@ -9,6 +9,9 @@
 //!   pf ledger tail          print the last entry's hash (ChainState.head_hash)
 //!   pf gate <task_id> [--required verified,validated]
 //!                           run evaluate_complete; on PASS write a reproducible bundle
+//!   pf coverage-check --report <llvm-cov.json>
+//!                           evaluate a cargo llvm-cov --json report against the
+//!                           coverage floor (default 80% aggregate / 80% per file)
 //!
 //! Ledger path: default `.pf/ledger.jsonl`, overridable via `PF_LEDGER`.
 //! Evidence dir: default `.pf/evidence/`, overridable via `PF_EVIDENCE_DIR`.
@@ -26,6 +29,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use polyforge_core::coverage::{
+    CoverageFloor, CoverageReport, CoverageScope, CrateCoverage, FileCoverage,
+};
 use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceState};
 use polyforge_core::gate::{evaluate_complete, Evaluation, GateError};
 use polyforge_core::ledger::{EvidenceEntry as LedgerEntry, Ledger};
@@ -435,6 +441,104 @@ fn cmd_gate(task_id: &str, required: &[EvidenceState]) -> Result<ExitCode, Strin
     }
 }
 
+/// Parse a `cargo llvm-cov --json` export into a coverage report.
+///
+/// The export shape is `{"data":[{"totals":{...},"files":[{...}]}]}`: each
+/// `data` entry carries a `totals.lines.percent` aggregate and a `files[]`
+/// list whose entries carry `filename` plus `summary.lines.percent` (both
+/// percentages 0-100; normalized to fractions here). Crate aggregates are
+/// derived from each entry's file paths via the `/crates/<name>/` segment.
+/// Parsing is defensive: missing/absent fields are skipped, and a report with
+/// no usable data yields an empty report (which evaluates to PASS — whether
+/// coverage was actually measured is the CI job's concern, not this
+/// checker's).
+fn parse_llvm_cov_report(raw: &str) -> Result<CoverageReport, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("invalid JSON: {e}"))?;
+    let mut report = CoverageReport::default();
+    let Some(data) = root.get("data").and_then(|v| v.as_array()) else {
+        return Ok(report);
+    };
+    for entry in data {
+        let mut entry_crate: Option<String> = None;
+        if let Some(files) = entry.get("files").and_then(|v| v.as_array()) {
+            for file in files {
+                let Some(path) = file.get("filename").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let percent = file
+                    .get("summary")
+                    .and_then(|s| s.get("lines"))
+                    .and_then(|l| l.get("percent"))
+                    .and_then(|v| v.as_f64());
+                if let Some(percent) = percent {
+                    report.files.push(FileCoverage {
+                        path: path.to_string(),
+                        ratio: percent / 100.0,
+                    });
+                }
+                if entry_crate.is_none() {
+                    entry_crate = crate_name_of(path);
+                }
+            }
+        }
+        if let Some(percent) = entry
+            .get("totals")
+            .and_then(|t| t.get("lines"))
+            .and_then(|l| l.get("percent"))
+            .and_then(|v| v.as_f64())
+        {
+            report.crates.push(CrateCoverage {
+                name: entry_crate.unwrap_or_else(|| "<workspace>".to_string()),
+                ratio: percent / 100.0,
+            });
+        }
+    }
+    Ok(report)
+}
+
+/// The crate a file belongs to: the path segment after the last `/crates/`
+/// marker, when present.
+fn crate_name_of(path: &str) -> Option<String> {
+    let marker = "/crates/";
+    let idx = path.rfind(marker)?;
+    let rest = &path[idx + marker.len()..];
+    let name = rest.split('/').next().unwrap_or("");
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn cmd_coverage_check(report_path: &str) -> Result<ExitCode, String> {
+    let raw = fs::read_to_string(report_path)
+        .map_err(|e| format!("read coverage report {}: {e}", report_path))?;
+    let report = parse_llvm_cov_report(&raw)
+        .map_err(|e| format!("parse coverage report {}: {e}", report_path))?;
+    let verdict = CoverageFloor::default().evaluate(&report);
+    if verdict.passed {
+        println!("coverage PASS");
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("coverage FAIL");
+    for failure in &verdict.failures {
+        match &failure.scope {
+            CoverageScope::Crate(name) => println!(
+                "crate {name}: {:.2}% < {:.2}% (floor)",
+                failure.ratio * 100.0,
+                failure.threshold * 100.0
+            ),
+            CoverageScope::File(path) => println!(
+                "file {path}: {:.2}% < {:.2}% (floor)",
+                failure.ratio * 100.0,
+                failure.threshold * 100.0
+            ),
+        }
+    }
+    Ok(ExitCode::from(1))
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     match dispatch(&args) {
@@ -571,6 +675,12 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
             }
             cmd_gate(&task_id, &required)
         }
+        "coverage-check" => {
+            if args.len() < 3 || args[1] != "--report" {
+                return Err("usage: pf coverage-check --report <llvm-cov.json>".to_string());
+            }
+            cmd_coverage_check(&args[2])
+        }
         other => Err(format!("unknown command: {other}")),
     }
 }
@@ -585,6 +695,7 @@ fn print_usage() {
          \x20              [--experiment <id>] [--model <fp>] [--run <id>] [--budget <amt>] [--metadata <json>]\n\
          \x20 pf ledger tail\n\
          \x20 pf gate <task_id> [--required verified,validated]\n\
+         \x20 pf coverage-check --report <llvm-cov.json>\n\
          \n\
          kinds: model_claim | tool_attestation | eval_attestation | discrepancy | validation\n\
          \n\

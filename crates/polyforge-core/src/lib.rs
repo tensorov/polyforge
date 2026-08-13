@@ -3,10 +3,15 @@
 //! This crate hosts the append-only evidence ledger with SHA-256 Merkle
 //! chaining and the deterministic `evaluate_complete` stage gate.
 
+pub mod coverage;
 pub mod evidence;
 pub mod gate;
 pub mod ledger;
 
+pub use coverage::{
+    CoverageFailure, CoverageFloor, CoverageReport, CoverageScope, CoverageVerdict, CrateCoverage,
+    FileCoverage,
+};
 pub use evidence::{
     promote, EvidenceEntry as TriStateEvidence, EvidenceError, EvidenceKind, EvidenceState,
 };
