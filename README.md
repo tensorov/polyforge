@@ -3,6 +3,10 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![CI](https://github.com/tensorov/polyforge/actions/workflows/ci.yml/badge.svg)](https://github.com/tensorov/polyforge/actions)
 [![Rust 1.85](https://img.shields.io/badge/rust-1.85-informational?logo=rust)](https://www.rust-lang.org)
+[![polyforge-core](https://img.shields.io/crates/v/polyforge-core?label=polyforge-core)](https://crates.io/crates/polyforge-core)
+[![polyforge-toolrunner](https://img.shields.io/crates/v/polyforge-toolrunner?label=polyforge-toolrunner)](https://crates.io/crates/polyforge-toolrunner)
+[![polyforge-mcp](https://img.shields.io/crates/v/polyforge-mcp?label=polyforge-mcp)](https://crates.io/crates/polyforge-mcp)
+[![polyforge-cli](https://img.shields.io/crates/v/polyforge-cli?label=polyforge-cli)](https://crates.io/crates/polyforge-cli)
 
 ## Demo
 
@@ -26,12 +30,16 @@ Run it yourself: `cargo build --workspace && cargo test --workspace` (see [Build
 
 Workspace of four crates (edition 2021, rust-version 1.85, Rust toolchain 1.95.0):
 
-| Crate                   | Responsibility                                                                                   |
-| ----------------------- | ------------------------------------------------------------------------------------------------ |
-| `polyforge-core`        | Evidence model: tri-state entries, promotion rules, the append-only Merkle ledger, and deterministic gate evaluation. |
-| `polyforge-toolrunner`  | Allowlisted tool runner: only allowlisted binaries (cargo/rustc/gcc), typed arguments, no shell, per-command environment fingerprint. |
-| `polyforge-mcp`         | Model Context Protocol server (rmcp): the interface models use to append claims and query gates. |
-| `polyforge-cli`         | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.           |
+| Crate                   | Crates.io                                                                                        | Responsibility                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `polyforge-core`        | [![crates.io](https://img.shields.io/badge/crates.io-0.1.0-blue)](https://crates.io/crates/polyforge-core) | Evidence model: tri-state entries, promotion rules, the append-only Merkle ledger, and deterministic gate evaluation. |
+| `polyforge-toolrunner`  | [![crates.io](https://img.shields.io/badge/crates.io-0.1.0-blue)](https://crates.io/crates/polyforge-toolrunner) | Allowlisted tool runner: only allowlisted binaries (cargo/rustc/gcc), typed arguments, no shell, per-command environment fingerprint. |
+| `polyforge-mcp`         | [![crates.io](https://img.shields.io/badge/crates.io-0.1.0-blue)](https://crates.io/crates/polyforge-mcp) | Model Context Protocol server (rmcp): the interface models use to append claims and query gates. |
+| `polyforge-cli`         | [![crates.io](https://img.shields.io/badge/crates.io-0.1.0-blue)](https://crates.io/crates/polyforge-cli) | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.           |
+
+All four crates are published to [crates.io](https://crates.io): `v0.1.0` of
+`polyforge-core`, `polyforge-toolrunner`, `polyforge-mcp`, and `polyforge-cli` (install the
+binaries with `cargo install polyforge-cli polyforge-mcp`).
 
 The CLI binary is named `polyforge-cli` (the crate name). All examples in this README use
 it directly; `alias pf=polyforge-cli` if you prefer the short name.

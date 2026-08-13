@@ -1,0 +1,10 @@
+{
+  "bundle_sha256": "018bcc70322beefbc49a9bae86181b33ca208596372b3156de0ddb2b55dfbf73",
+  "passed": true,
+  "tail_hash": "e32e923544e0e7c6b7ecab1361368fb22e10bdceb9a071ae567a63d4fc1f5d9b",
+  "task_id": "t14-readme-crates",
+  "tool_versions": {
+    "cargo": "1.95.0",
+    "rustc": "1.95.0"
+  }
+}
