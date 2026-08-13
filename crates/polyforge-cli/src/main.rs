@@ -755,8 +755,21 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
-    use super::{evidence_dir, ledger_path};
+    use super::{evidence_dir, latest_state_of_state, ledger_path, parse_kind, tool_versions};
+    use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceState};
+    use polyforge_core::ledger::Ledger;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_ledger_path() -> PathBuf {
+        let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "polyforge-cli-unit-{}-{n}.jsonl",
+            std::process::id()
+        ))
+    }
 
     /// With no PF_LEDGER/PF_EVIDENCE_DIR overrides, the compiled-in defaults
     /// must resolve under `.pf/` — the tracked runtime home (C7 relocation).
@@ -769,5 +782,95 @@ mod tests {
 
         assert_eq!(ledger_path(), PathBuf::from(".pf/ledger.jsonl"));
         assert_eq!(evidence_dir(), PathBuf::from(".pf/evidence/"));
+    }
+
+    /// Mutant :70:5 (tool_versions -> Default).
+    #[test]
+    fn test_tool_versions_reports_rustc_and_cargo() {
+        let versions = tool_versions();
+        assert!(
+            versions.get("rustc").is_some(),
+            "tool_versions must include rustc, got {versions}"
+        );
+        assert!(
+            versions.get("cargo").is_some(),
+            "tool_versions must include cargo, got {versions}"
+        );
+    }
+
+    /// Mutant :91:5 (parse_kind -> Ok("") / Ok("xyzzy")).
+    #[test]
+    fn test_parse_kind_accepts_all_kinds_and_rejects_unknown() {
+        for kind in [
+            "model_claim",
+            "tool_attestation",
+            "eval_attestation",
+            "discrepancy",
+            "validation",
+        ] {
+            assert_eq!(parse_kind(kind), Ok(kind), "parse_kind must accept {kind}");
+        }
+        assert!(
+            parse_kind("bogus").is_err(),
+            "parse_kind must reject unknown kinds"
+        );
+    }
+
+    /// Mutant :233:17 (&& -> ||).
+    #[test]
+    fn test_latest_state_of_state_matches_task_and_state() {
+        let path = temp_ledger_path();
+        let mut ledger = Ledger::new(&path);
+        ledger
+            .append(EvidenceEntry::new_claim("A", "c1", "d1", "p1").to_ledger_entry())
+            .expect("append claim A");
+        ledger
+            .append(EvidenceEntry::new_claim("B", "c2", "d2", "p2").to_ledger_entry())
+            .expect("append claim B");
+
+        let found = latest_state_of_state(&ledger, "A", "ModelClaimed")
+            .expect("query must succeed")
+            .expect("task A must have a ModelClaimed entry");
+        assert_eq!(found.task_id, "A", "must return task A's entry, not B's");
+        assert_eq!(found.state, EvidenceState::ModelClaimed);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Mutant :241:17 (delete the Validated arm).
+    #[test]
+    fn test_latest_state_of_state_reconstructs_validated() {
+        let path = temp_ledger_path();
+        let mut ledger = Ledger::new(&path);
+
+        let claim = EvidenceEntry::new_claim("V", "c1", "d1", "p1");
+        let attestation = EvidenceEntry::tool_attestation(
+            "V",
+            "c1",
+            "d1",
+            "polyforge-cli-1.95.0",
+            "cli",
+            "ran",
+            0,
+            "none",
+            "ran",
+        );
+        let verified = promote(&claim, &attestation).expect("claim -> verified");
+        let validation = EvidenceEntry::validation("V", "c1", "d1", "op", "check", "check");
+        let validated = promote(&verified, &validation).expect("verified -> validated");
+        ledger
+            .append(validated.to_ledger_entry())
+            .expect("append validated entry");
+
+        let found = latest_state_of_state(&ledger, "V", "Validated")
+            .expect("query must succeed")
+            .expect("task V must have a Validated entry");
+        assert_eq!(
+            found.state,
+            EvidenceState::Validated,
+            "state must be Validated"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }
