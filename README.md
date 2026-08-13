@@ -13,7 +13,7 @@ record claims, allowlisted tools attest them, and operators gate on the resultin
 
 ## Proof
 
-Everything in this README is covered by the workspace test suite (45 tests across the four
+Everything in this README is covered by the workspace test suite (66 tests across the four
 crates) and by the CLI/MCP smoke and end-to-end harnesses.
 
 Run it yourself: `cargo build --workspace && cargo test --workspace` (see [Build from source](#build-from-source)).
@@ -45,21 +45,27 @@ Evidence is tri-state and only ever moves forward:
 - `model_claim` — the model records a claim about its own work. Creates a `ModelClaimed` entry.
 - `tool_attestation` — an allowlisted tool run produces a `ToolAttestation` entry that
   promotes the task's `ModelClaimed` entry to `Verified`.
+- `eval_attestation` — an operator records an evaluation outcome (experiment, run, model
+  fingerprint, budget) that promotes the task's `ModelClaimed` entry to `Verified`.
+- `discrepancy` — an operator (or the toolrunner, on a failed verifier run) records a
+  refutation trace that promotes the task's `ModelClaimed` entry to `Refuted`.
 - `validation` — an operator validation produces a `Validation` entry that promotes the
   task's `Verified` entry to `Validated`.
 
-A gate can require `verified` or `validated` (see below).
+A gate can require `verified` or `validated` (see below). `Refuted` entries are recorded
+but never satisfy a gate in this milestone.
 
 ## Models can never self-produce `Verified`
 
-- The CLI accepts only three kinds: `model_claim`, `tool_attestation`, `validation`.
-  `model_claim` can only create a new `ModelClaimed` entry.
+- The CLI accepts five kinds: `model_claim`, `tool_attestation`, `validation`,
+  `eval_attestation`, and `discrepancy`. `model_claim` can only create a new
+  `ModelClaimed` entry.
 - `tool_attestation` does not append a bare entry: it locates the task's latest
   `ModelClaimed` entry and promotes it. With no prior claim the append is rejected
   (models cannot self-promote).
-- The MCP `evidence_append` tool accepts `kind=ModelClaim` **only**; `ToolAttestation` and
-  `Validation` are rejected at the server — models connected over MCP cannot create
-  `Verified` or `Validated` entries at all.
+- The MCP `evidence_append` tool accepts `kind=ModelClaim` **only**; `ToolAttestation`,
+  `Validation`, `EvalAttestation`, and `Discrepancy` are rejected at the server — models
+  connected over MCP cannot create `Verified`, `Refuted`, or `Validated` entries at all.
 - Promotion is enforced by the single `promote` gatekeeper in `polyforge-core`; a model's
   only path toward `Verified` is an allowlisted tool attestation.
 
