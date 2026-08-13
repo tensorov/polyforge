@@ -1,0 +1,10 @@
+{
+  "bundle_sha256": "c3bd45c03350b5b997d91d6d3e178d847debadd1f7d6211fb496aef2b493fa5c",
+  "passed": true,
+  "tail_hash": "562f1780f2ec4f527f151831973ed932c1cb6a3c0ebd7905e48a9b889359e22b",
+  "task_id": "t13-mcp-keyword",
+  "tool_versions": {
+    "cargo": "1.95.0",
+    "rustc": "1.95.0"
+  }
+}
