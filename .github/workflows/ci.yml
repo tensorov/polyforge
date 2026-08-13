@@ -4,6 +4,8 @@ on:
   push:
     branches: [master]
   pull_request:
+  schedule:
+    - cron: '0 3 * * 1'
 
 jobs:
   ci:
@@ -28,3 +30,105 @@ jobs:
           cargo build -p polyforge-cli
           ./target/debug/polyforge-cli ledger tail
           PF_EVIDENCE_DIR=/tmp/pf-ci-evidence ./target/debug/polyforge-cli gate bootstrap --required verified
+
+  coverage:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (llvm-tools-preview)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Coverage floor (>= 80% lines, per-file >= 80%)
+        run: cargo llvm-cov -p polyforge-core -p polyforge-toolrunner --all-features --fail-under-lines 80 --fail-under-file-lines 80
+
+  mutations:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Compute diff base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "BASE=origin/${{ github.base_ref }}" >> "$GITHUB_ENV"
+          else
+            BASE="${{ github.event.before }}"
+            if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              BASE="$(git rev-parse HEAD^ || true)"
+            fi
+            echo "BASE=$BASE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Capture diff of Rust sources
+        run: git diff "$BASE".. -- '*.rs' | tee git.diff
+
+      - name: Scope mutant list to the diff
+        run: |
+          if git diff --name-only "$BASE".. -- '*.rs' | grep -Eq '(^|/)tests?/|(^|/)[^/]*test[^/]*\.rs$' ; then
+            echo "test files changed; running un-scoped full-crate suite" >&2
+            echo "RUN_SCOPE=full" >> "$GITHUB_ENV"
+          else
+            MUTANTS=$(cargo mutants --list --json --in-diff git.diff -p polyforge-core -p polyforge-toolrunner | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+            if [ "$MUTANTS" -eq 0 ]; then
+              echo "no mutants in diff scope; skipping mutations job" >&2
+              echo "RUN_SCOPE=skip" >> "$GITHUB_ENV"
+            else
+              echo "$MUTANTS mutants in diff scope" >&2
+              echo "RUN_SCOPE=in-diff" >> "$GITHUB_ENV"
+            fi
+          fi
+
+      - name: Run mutations (in-diff)
+        if: env.RUN_SCOPE == 'in-diff'
+        run: cargo mutants --no-shuffle -vV --in-diff git.diff -p polyforge-core -p polyforge-toolrunner --timeout=500 --build-timeout=500
+
+      - name: Run mutations (full, test files changed)
+        if: env.RUN_SCOPE == 'full'
+        run: cargo mutants --no-shuffle -vV -p polyforge-core -p polyforge-toolrunner --timeout=500 --build-timeout=500
+
+      - name: Skip mutations (no mutants in scope)
+        if: env.RUN_SCOPE == 'skip'
+        run: echo "nothing to mutate; job skipped"
+
+  mutations-weekly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Run mutations (full, hard-fail on survivors)
+        run: cargo mutants --in-place --no-shuffle --timeout=500 --build-timeout=500
+
+      - name: Upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutants.out
+          path: mutants.out

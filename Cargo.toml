@@ -14,3 +14,9 @@ rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/tensorov/polyforge"
 homepage = "https://github.com/tensorov/polyforge"
+
+# cargo-mutants profile knob (C1.3): speed up mutation runs in CI.
+# `inherits = "test"` keeps test-only deps; `debug = "none"` skips debuginfo.
+[profile.mutants]
+inherits = "test"
+debug = "none"
