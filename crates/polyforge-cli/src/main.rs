@@ -608,71 +608,68 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
             let mut commit = None;
             let mut diff = None;
             let mut identity = IdentityFlags::default();
-            let mut i = 3;
-            while i < args.len() {
-                match args[i].as_str() {
+            let mut iter = args.iter().skip(3);
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
                     "--task" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--task requires a value".to_string());
-                        }
-                        task_id = args[i].clone();
+                        task_id = iter
+                            .next()
+                            .ok_or_else(|| "--task requires a value".to_string())?
+                            .clone();
                     }
                     "--commit" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--commit requires a value".to_string());
-                        }
-                        commit = Some(args[i].clone());
+                        commit = Some(
+                            iter.next()
+                                .ok_or_else(|| "--commit requires a value".to_string())?
+                                .clone(),
+                        );
                     }
                     "--diff" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--diff requires a value".to_string());
-                        }
-                        diff = Some(args[i].clone());
+                        diff = Some(
+                            iter.next()
+                                .ok_or_else(|| "--diff requires a value".to_string())?
+                                .clone(),
+                        );
                     }
                     "--experiment" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--experiment requires a value".to_string());
-                        }
-                        identity.experiment_id = Some(args[i].clone());
+                        identity.experiment_id = Some(
+                            iter.next()
+                                .ok_or_else(|| "--experiment requires a value".to_string())?
+                                .clone(),
+                        );
                     }
                     "--model" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--model requires a value".to_string());
-                        }
-                        identity.model_fingerprint = Some(args[i].clone());
+                        identity.model_fingerprint = Some(
+                            iter.next()
+                                .ok_or_else(|| "--model requires a value".to_string())?
+                                .clone(),
+                        );
                     }
                     "--run" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--run requires a value".to_string());
-                        }
-                        identity.run_id = Some(args[i].clone());
+                        identity.run_id = Some(
+                            iter.next()
+                                .ok_or_else(|| "--run requires a value".to_string())?
+                                .clone(),
+                        );
                     }
                     "--budget" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--budget requires a value".to_string());
-                        }
-                        identity.budget = Some(args[i].clone());
+                        identity.budget = Some(
+                            iter.next()
+                                .ok_or_else(|| "--budget requires a value".to_string())?
+                                .clone(),
+                        );
                     }
                     "--metadata" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--metadata requires a value".to_string());
-                        }
+                        let raw = iter
+                            .next()
+                            .ok_or_else(|| "--metadata requires a value".to_string())?;
                         identity.eval_metadata = Some(
-                            serde_json::from_str(&args[i])
+                            serde_json::from_str(raw)
                                 .map_err(|e| format!("--metadata must be valid JSON: {e}"))?,
                         );
                     }
                     other => return Err(format!("unknown flag: {other}")),
                 }
-                i += 1;
             }
             cmd_append(
                 &kind,
@@ -706,19 +703,17 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
             }
             let task_id = args[1].clone();
             let mut required = vec![EvidenceState::Verified];
-            let mut i = 2;
-            while i < args.len() {
-                match args[i].as_str() {
+            let mut iter = args.iter().skip(2);
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
                     "--required" => {
-                        i += 1;
-                        if i >= args.len() {
-                            return Err("--required requires a value".to_string());
-                        }
-                        required = parse_required(&args[i])?;
+                        required = parse_required(
+                            iter.next()
+                                .ok_or_else(|| "--required requires a value".to_string())?,
+                        )?;
                     }
                     other => return Err(format!("unknown flag: {other}")),
                 }
-                i += 1;
             }
             cmd_gate(&task_id, &required)
         }
