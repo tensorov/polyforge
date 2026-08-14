@@ -1,9 +1,5 @@
 name: PolyForge gate
-description: |
-  Gate a task against the PolyForge evidence ledger and verify the committed
-  Merkle-chain anchor. Fails closed on anchor tamper. Canonical published
-  action; the polyforge repo keeps a parity-checked local copy at
-  .github/actions/polyforge.
+description: Gate a task against the PolyForge evidence ledger and verify the committed Merkle-chain anchor. Fails closed on tamper.
 branding:
   icon: shield
   color: blue
