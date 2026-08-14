@@ -32,7 +32,7 @@ jobs:
         run: cargo build -p polyforge-cli
 
       - name: PolyForge self-gate
-        uses: ./.github/actions/polyforge
+        uses: tensorov/polyforge-action@v1
         with:
           task-id: bootstrap
           required: verified
@@ -55,6 +55,15 @@ jobs:
 
       - name: Coverage floor (>= 80% lines, per-file >= 80%)
         run: cargo llvm-cov -p polyforge-core -p polyforge-toolrunner --all-features --fail-under-lines 80 --fail-under-file-lines 80
+
+  parity:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check local action copy parity with published v1
+        run: scripts/check-action-parity.sh
 
   mutations:
     if: github.event_name != 'schedule'

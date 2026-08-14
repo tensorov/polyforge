@@ -1,9 +1,12 @@
 name: PolyForge gate
 description: |
   Gate a task against the PolyForge evidence ledger and verify the committed
-  Merkle-chain anchor. Fails closed on anchor tamper. Composite action - the
-  local reusable copy of tensorov/polyforge-action (published separately in
-  Phase 1). The repo's CI uses this action at ./.github/actions/polyforge.
+  Merkle-chain anchor. Fails closed on anchor tamper. Canonical published
+  action; the polyforge repo keeps a parity-checked local copy at
+  .github/actions/polyforge.
+branding:
+  icon: shield
+  color: blue
 inputs:
   task-id:
     description: Task id to gate against the ledger
