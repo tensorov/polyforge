@@ -1,3 +1,7 @@
 # Rust build artifacts
 target/
 .omo/
+
+# cargo-mutants artifacts
+mutants.out/
+mutants.out.old/

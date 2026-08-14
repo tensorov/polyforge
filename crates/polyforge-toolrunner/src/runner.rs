@@ -246,22 +246,30 @@ fn parse_timeout_from(value: Option<&str>) -> Duration {
 /// SIGKILL the process group led by `pid` (the child spawned with
 /// `process_group(0)`). Errors are ignored: the only goal is to release the
 /// output pipes so the blocked `wait_with_output` returns.
-#[cfg(unix)]
+///
+/// The function is deliberately NOT cfg-split: on Unix it runs a real
+/// `killpg`, on every other platform it falls through to an unconditional
+/// `/bin/kill -9` subprocess, whose failure it ignores. The structural reason
+/// is mutation-testing observability (commit 519ae8b lesson): a statement
+/// gated behind `cfg(not(unix))` never compiles on Linux CI, so its mutant is
+/// never built, never run, and registers as MISSED, which fails the exact
+/// `cargo-mutants --in-diff` gate this repo enforces. An always-compiled
+/// executable fallback line IS compiled on Linux, its mutant IS runnable, and
+/// the mutant guard test below kills it. On Unix the extra `kill -9` of a
+/// group leader we already `killpg`'d is a harmless ESRCH no-op.
 fn kill_process_group(pid: u32) {
-    // SAFETY: `pid` came from a live Child we spawned into its own process
-    // group; killpg takes a pid_t and a signal. Failure (ESRCH etc.) is
-    // ignored by design.
-    unsafe {
-        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+    #[cfg(unix)]
+    {
+        // SAFETY: `pid` came from a live Child we spawned into its own process
+        // group; killpg takes a pid_t and a signal. Failure (ESRCH etc.) is
+        // ignored by design.
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
     }
-}
-
-/// Non-Unix fallback: no process-group kill in std. Deliberate no-op: a
-/// process-group kill is a Unix concept, and this fallback is dead code on
-/// every supported CI platform.
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {
-    // No-op. Nothing to kill on non-Unix.
+    // Always-compiled fallback so its mutant is runnable on Linux CI (see doc
+    // comment). Best-effort: any spawn or kill failure is ignored by design.
+    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
 }
 
 /// Reject shell metacharacters in typed args. This is a shape check, not
@@ -836,7 +844,7 @@ mod tests {
 
     #[test]
     fn test_hanging_tool_times_out() {
-        let child = spawn_raw(&["sleep", "30"]);
+        let child = spawn_raw(&["sleep", "6"]);
         let start = std::time::Instant::now();
         let err = wait_with_timeout(child, Duration::from_millis(500)).unwrap_err();
         assert!(
@@ -857,7 +865,7 @@ mod tests {
         // and wait_with_timeout would block past the deadline.
         let pid_file = std::env::temp_dir().join(format!("pf-killpg-{}.pid", std::process::id()));
         let _ = std::fs::remove_file(&pid_file);
-        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let script = format!("sleep 6 & echo $! > {}; wait", pid_file.display());
         let child = spawn_raw(&["sh", "-c", &script]);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !pid_file.exists() {
@@ -885,6 +893,36 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         let _ = std::fs::remove_file(&pid_file);
+    }
+
+    // Mutant guard for the always-compiled fallback inside kill_process_group.
+    // The child inherits this test runner's process group (deliberately NOT
+    // process_group(0)), so killpg(child_pid) is an ESRCH no-op: only the
+    // unconditional `kill -9` fallback can kill it. A mutant that drops or
+    // breaks the fallback leaves the child alive and the assertion trips
+    // within ~1s, far under the 500s cargo-mutants --timeout.
+    #[cfg(unix)]
+    #[test]
+    fn test_kill_process_group_fallback_kills_child() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = cmd.spawn().expect("sleep spawned");
+        let pid = child.id();
+        kill_process_group(pid);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match child.try_wait().expect("try_wait") {
+                Some(_) => break,
+                None => assert!(
+                    std::time::Instant::now() < deadline,
+                    "child {pid} survived kill_process_group: the always-compiled fallback is dead"
+                ),
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
