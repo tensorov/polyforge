@@ -41,7 +41,7 @@ The goal: PolyForge becomes a standard for other teams, not just for us.
 
 | # | Task | Why |
 |---|------|-----|
-| 1.1 | Publish `tensorov/polyforge-action` to the marketplace + GitLab CI gateway | CI gateway. Agent code lands via PR/MR — the gate must live there. |
+| 1.1 | Publish `tensorov/polyforge-action` to the marketplace — **published (v1.0.0)**; GitLab CI gateway — future | CI gateway. Agent code lands via PR/MR — the gate must live there. |
 | 1.2 | MCP server → ecosystem: PR into `modelcontextprotocol/servers` (featured), with examples and prompts; **Claude Computer Use** — automatic `model_claim` per tool call | The `polyforge-mcp` crate already exists (stdio, ledger, addr); what remains is ecosystem exposure. Computer Use makes attestation seamless. |
 | 1.3 | **Python + TypeScript toolrunner**: allowlist `pytest/ruff/mypy/pyright/uv` and `vitest/tsc/eslint/biome` + environment fingerprints (venv, uv.lock, pnpm-lock) | Currently Rust-oriented; most agent pipelines are Python/TS. Direct applicability growth. |
 | 1.4 | **TUI "LazyForge"** (Ratatui, like lazygit/k9s): task tree → diffs → confirming tools → one key `[V] Validate` → signature into the ledger | Operator supervision at scale. At thousands of micro-tasks a human will either approve blindly or give up. Key tool for the project's own self-improvement loop. |

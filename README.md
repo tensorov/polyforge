@@ -131,6 +131,34 @@ Environment variables:
 - `PF_LEDGER` — ledger path (default `.pf/ledger.jsonl`).
 - `PF_EVIDENCE_DIR` — directory for gate bundles and manifests (default `.pf/evidence/`).
 
+## CI integration / GitHub Actions
+
+The published action [`tensorov/polyforge-action`](https://github.com/tensorov/polyforge-action)
+gates a task in CI and verifies the committed Merkle-chain anchor. This repository dogfoods
+it on every push and pull request (see `.github/workflows/ci.yml`).
+
+```yaml
+- uses: tensorov/polyforge-action@v1
+  with:
+    task-id: my-task
+    required: verified,validated
+    ledger-path: .pf/ledger.jsonl
+    evidence-dir: .pf/evidence/
+```
+
+Inputs:
+
+| Input          | Required | Default               | Description                                        |
+| -------------- | -------- | --------------------- | -------------------------------------------------- |
+| `task-id`      | yes      | —                     | Task id to gate against the ledger.                |
+| `required`     | no       | `verified,validated`  | Comma-list of required evidence states.            |
+| `ledger-path`  | no       | `.pf/ledger.jsonl`    | Ledger path relative to the workspace root.        |
+| `evidence-dir` | no       | `.pf/evidence/`       | Evidence directory relative to the workspace root. |
+
+The action fails closed: a corrupted chain, a missing anchor, or a gate that does not reach
+the required state fails the job. To make the gate a hard merge requirement, add the job to
+a branch ruleset as a required status check — a PR cannot merge while the gate is red.
+
 ## Running a gate
 
 ```sh
@@ -259,6 +287,10 @@ nothing is written. This is exercised end-to-end by the army harness (byte-flip 
 tail entry → gate exits non-zero with `ledger integrity broken at seq …`, no bundle, no
 manifest).
 
+Tamper evidence holds within a trusted checkout: the chain proves the ledger was not
+rewritten, not that the checkout itself is authentic. Cryptographic external anchoring is
+roadmap (Phase 3).
+
 ## Examples
 
 A runnable end-to-end walkthrough of the tri-state lifecycle lives in
@@ -338,7 +370,7 @@ PolyForge gates its own development (dogfooding).
 | Phase | What it unlocks | Key items |
 | ----- | --------------- | --------- |
 | 0 — Trust hardening + self-gating | Gates that cannot be gamed, on environments that cannot be faked | Mutation testing (`cargo-mutants`, Stryker), Nix/Devbox fingerprints, `polyforge-action` self-gating on this repo |
-| 1 — Adoption | PolyForge as a standard part of any team's workflow | `tensorov/polyforge-action`, featured MCP server + Computer Use, Python/TS toolrunner, "LazyForge" TUI, Cline/Aider/Cursor prompts |
+| 1 — Adoption | PolyForge as a standard part of any team's workflow | `tensorov/polyforge-action` (published v1.0.0), featured MCP server + Computer Use, Python/TS toolrunner, "LazyForge" TUI, Cline/Aider/Cursor prompts |
 | 2 — Scale & observability | Fleets of hundreds of agents with evidence as first-class observability | Remote backend (PostgreSQL + S3/DynamoDB), web dashboard + REST/gRPC API, OpenTelemetry exporter, LangGraph/CrewAI/AutoGen middleware |
 | 3 — Enterprise & ecosystem | Gates that pass enterprise and regulated scrutiny | SLSA/in-toto/Sigstore, deep plugins (Cursor/Windsurf/Continue.dev), web human-in-the-loop, Policy-as-Code |
 | Moonshot backlog | Trust at the hardware level; attestations as a market | Verification marketplace, TEE / hardware attestations |
