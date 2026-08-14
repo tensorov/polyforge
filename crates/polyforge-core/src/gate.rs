@@ -416,4 +416,44 @@ mod tests {
             .chars()
             .all(|ch| ch.is_ascii_hexdigit()));
     }
+
+    #[test]
+    fn test_gate_error_display_is_non_empty() {
+        // Mutant guard: Display for GateError -> Ok(Default::default()). The
+        // rendered message must be non-empty for every variant.
+        let err = GateError::TaskNotFound {
+            task_id: "T4".to_string(),
+        };
+        assert!(!format!("{err}").is_empty());
+        let err = GateError::Io("boom".to_string());
+        assert!(!format!("{err}").is_empty());
+        let err = GateError::Json("boom".to_string());
+        assert!(!format!("{err}").is_empty());
+        let err = GateError::LedgerIntegrity {
+            seq: 1,
+            expected: "a".to_string(),
+            found: "b".to_string(),
+        };
+        assert!(!format!("{err}").is_empty());
+    }
+
+    #[test]
+    fn test_gate_counts_validated_entries() {
+        // Mutant guard: `counts.validated += 1` -> `*= 1` in evaluate_complete.
+        // A validated ledger must count exactly one Validated entry.
+        let ledger = ledger_with("T4", true);
+        let eval = evaluate_complete(&ledger, "T4", &[EvidenceState::Validated]).unwrap();
+        assert!(eval.passed);
+        assert_eq!(eval.counts.validated, 1);
+    }
+
+    #[test]
+    fn test_state_of_maps_validated() {
+        // Mutant guard: delete match arm "Validated" in state_of. A validated
+        // entry's payload must map to Some(EvidenceState::Validated).
+        let v = promote(&claim("T4"), &attestation("T4")).unwrap();
+        let d = promote(&v, &validation("T4")).unwrap();
+        let entry = d.to_ledger_entry();
+        assert_eq!(state_of(&entry), Some(EvidenceState::Validated));
+    }
 }

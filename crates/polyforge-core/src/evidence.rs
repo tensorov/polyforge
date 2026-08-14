@@ -637,4 +637,13 @@ mod tests {
         assert_eq!(ha.len(), 64);
         assert_ne!(ha, hb, "identity fields must be covered by the chain hash");
     }
+
+    #[test]
+    fn test_evidence_error_display_is_non_empty() {
+        // Mutant guard: Display for EvidenceError -> Ok(Default::default()).
+        // The rendered message must be non-empty.
+        let c = claim();
+        let err = promote(&c, &validation()).unwrap_err();
+        assert!(!format!("{err}").is_empty());
+    }
 }

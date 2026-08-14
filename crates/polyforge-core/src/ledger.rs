@@ -432,4 +432,55 @@ mod tests {
             "same sequence -> same head hash"
         );
     }
+
+    #[test]
+    fn test_verify_chain_detects_anchor_head_hash_mismatch() {
+        // Mutant guard: `||` -> `&&` in verify_chain. With `&&`, a mismatch on
+        // head_hash alone (entry_count still correct) would NOT be reported.
+        let path = tmp_path("anchor-head-mismatch");
+        let mut ledger = Ledger::new(&path);
+        ledger.append(entry("kind-a", json!({"x": 1}))).unwrap();
+        // Corrupt only the head_hash; entry_count stays correct.
+        ledger
+            .write_anchor(&Anchor {
+                entry_count: 1,
+                head_hash: "0".repeat(64),
+            })
+            .unwrap();
+        let err = ledger.verify_chain().unwrap_err();
+        assert!(matches!(err, LedgerError::ChainBroken { .. }));
+    }
+
+    #[test]
+    fn test_read_entries_reports_io_error_on_bad_path() {
+        // Mutant guard: `e.kind() == NotFound` -> `true` in read_entries. A
+        // non-NotFound error (ENAMETOOLONG) must surface as Err(Io), not be
+        // swallowed as an empty ledger.
+        let path = tmp_path(&"x".repeat(300));
+        let ledger = Ledger::new(&path);
+        let err = ledger.read_entries().unwrap_err();
+        assert!(matches!(err, LedgerError::Io(_)));
+    }
+
+    #[test]
+    fn test_read_anchor_ok_none_when_anchor_missing() {
+        // Mutant guards: `== NotFound` -> `false` and `==` -> `!=` in
+        // read_anchor. A missing anchor file must yield Ok(None), not Err(Io).
+        let path = tmp_path("anchor-missing");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(Ledger::new(&path).anchor_path());
+        let ledger = Ledger::new(&path);
+        assert_eq!(ledger.read_anchor().unwrap(), None);
+    }
+
+    #[test]
+    fn test_read_anchor_reports_io_error_on_bad_path() {
+        // Mutant guard: `e.kind() == NotFound` -> `true` in read_anchor. A
+        // non-NotFound error (ENAMETOOLONG) must surface as Err(Io), not be
+        // swallowed as Ok(None).
+        let path = tmp_path(&"y".repeat(300));
+        let ledger = Ledger::new(&path);
+        let err = ledger.read_anchor().unwrap_err();
+        assert!(matches!(err, LedgerError::Io(_)));
+    }
 }

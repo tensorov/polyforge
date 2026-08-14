@@ -183,6 +183,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     use crate::runner::lookup;
 
@@ -205,6 +206,18 @@ mod tests {
 
     fn tool(name: &str) -> Tool {
         lookup(name).expect("tool on allowlist")
+    }
+
+    // Run truncate on a worker thread so a non-terminating mutant (the
+    // `-=` -> `/=` division mutation) fails the test instead of hanging it.
+    fn truncate_bounded(s: &str, limit: usize) -> String {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s = s.to_string();
+        std::thread::spawn(move || {
+            tx.send(truncate(&s, limit)).unwrap();
+        });
+        rx.recv_timeout(Duration::from_millis(250))
+            .expect("truncate must terminate")
     }
 
     #[test]
@@ -348,5 +361,117 @@ mod tests {
         let err =
             verify_and_append(&mut ledger, "T6", 0, &tool("cargo --version"), &[]).unwrap_err();
         assert!(matches!(err, RunnerError::ClaimNotFound(0)));
+    }
+
+    // Mutant 15 (verify.rs:29:5, `end -= 1` -> `end += 1`): the loop must
+    // decrement towards a char boundary; the ASCII case returns "hel".
+    #[test]
+    fn test_truncate_ascii_caps_at_limit() {
+        assert_eq!(truncate("hello", 3), "hel");
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    // Mutant 16 (verify.rs:29:5, `end -= 1` -> `end *= 1`): with the
+    // multiplier mutation the boundary never recedes, so the whole string is
+    // returned; truncation must still cap it.
+    #[test]
+    fn test_truncate_ascii_never_returns_longer_than_limit() {
+        let s = truncate("hello", 3);
+        assert_eq!(s, "hel");
+        assert!(s.len() <= 3);
+    }
+
+    // Mutant 17 (verify.rs:34:5, delete `!`): with the negated boundary check
+    // the loop keeps decrementing to 0 and returns the empty string, so a
+    // non-empty UTF-8 prefix is required.
+    #[test]
+    fn test_truncate_utf8_preserves_codepoints() {
+        assert_eq!(truncate_bounded("héllo", 2), "h");
+        assert_eq!(truncate_bounded("héllo", 3), "hé");
+    }
+
+    // Mutant 18 (verify.rs:34:5, `end -= 1` -> `end += 1`): with the increment
+    // mutation the boundary never reaches a char boundary from a non-boundary
+    // start, so the loop runs until a panic on slicing; the correct result
+    // terminates immediately.
+    #[test]
+    fn test_truncate_utf8_terminates_with_prefix() {
+        let s = truncate_bounded("héllo", 2);
+        assert_eq!(s, "h");
+        assert_eq!(s.len(), 1);
+    }
+
+    // Mutant 19 (verify.rs:34:5, `end -= 1` -> `end /= 1`): with the division
+    // mutation the boundary never changes and the loop spins forever; the
+    // watchdog thread fails the test instead of hanging it.
+    #[test]
+    fn test_truncate_utf8_loop_terminates() {
+        assert_eq!(truncate_bounded("héllo", 2), "h");
+    }
+
+    // Mutant 20 (verify.rs:123:5, tri_state_from_ledger -> Ok(Verified)): a
+    // claim entry whose payload carries no validation must reconstruct with
+    // its true state, never a fabricated Verified.
+    #[test]
+    fn test_tri_state_from_ledger_keeps_claim_state() {
+        let path = tmp_path("tri-claim");
+        let mut ledger = Ledger::new(&path);
+        append_claim(&mut ledger, "T6");
+        let raw = ledger.iter_entries().unwrap().remove(0);
+        let restored = tri_state_from_ledger(&raw).unwrap();
+        assert_eq!(restored.kind, EvidenceKind::ModelClaim);
+        assert_eq!(restored.state, EvidenceState::ModelClaimed);
+        assert_eq!(restored.task_id, "T6");
+        assert_eq!(restored.commit_sha, "abc123");
+    }
+
+    // Mutant 21 (verify.rs:123:5, tri_state_from_ledger -> Ok(Validated)): a
+    // claim entry must never reconstruct as Validated without a validation
+    // entry in the chain.
+    #[test]
+    fn test_tri_state_from_ledger_never_fabricates_validated() {
+        let path = tmp_path("tri-fabricate");
+        let mut ledger = Ledger::new(&path);
+        append_claim(&mut ledger, "T6");
+        let raw = ledger.iter_entries().unwrap().remove(0);
+        let restored = tri_state_from_ledger(&raw).unwrap();
+        assert_eq!(restored.state, EvidenceState::ModelClaimed);
+        assert_ne!(restored.state, EvidenceState::Validated);
+    }
+
+    // Mutant 20 (verify.rs:132:9, delete match arm Some("Verified")): a
+    // Verified entry must round-trip; with the arm deleted the match falls
+    // through to the error arm and the unwrap panics.
+    #[test]
+    fn test_tri_state_from_ledger_round_trips_verified() {
+        let v = EvidenceEntry::tool_attestation(
+            "T6",
+            "abc123",
+            "diff-1",
+            "cargo 1.0",
+            "fp",
+            "cargo --version",
+            0,
+            "h".repeat(64),
+            "ts-1",
+        );
+        let raw = v.to_ledger_entry();
+        let restored = tri_state_from_ledger(&raw).unwrap();
+        assert_eq!(restored.kind, EvidenceKind::ToolAttestation);
+        assert_eq!(restored.state, EvidenceState::Verified);
+        assert_eq!(restored.command, "cargo --version");
+    }
+
+    // Mutant 21 (verify.rs:133:9, delete match arm Some("Validated")): a
+    // Validated entry must round-trip; with the arm deleted the match falls
+    // through to the error arm and the unwrap panics.
+    #[test]
+    fn test_tri_state_from_ledger_round_trips_validated() {
+        let v = EvidenceEntry::validation("T6", "abc123", "diff-1", "oracle", "ok", "ts-1");
+        let raw = v.to_ledger_entry();
+        let restored = tri_state_from_ledger(&raw).unwrap();
+        assert_eq!(restored.kind, EvidenceKind::Validation);
+        assert_eq!(restored.state, EvidenceState::Validated);
+        assert_eq!(restored.validator, "oracle");
     }
 }

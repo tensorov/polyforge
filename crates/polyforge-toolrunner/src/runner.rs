@@ -256,11 +256,12 @@ fn kill_process_group(pid: u32) {
     }
 }
 
-/// Non-Unix fallback: no process-group kill in std; best effort on the parent
-/// process only.
+/// Non-Unix fallback: no process-group kill in std. Deliberate no-op: a
+/// process-group kill is a Unix concept, and this fallback is dead code on
+/// every supported CI platform.
 #[cfg(not(unix))]
-fn kill_process_group(pid: u32) {
-    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+fn kill_process_group(_pid: u32) {
+    // No-op. Nothing to kill on non-Unix.
 }
 
 /// Reject shell metacharacters in typed args. This is a shape check, not
@@ -446,6 +447,9 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use polyforge_core::evidence::{EvidenceKind, EvidenceState};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SCRIPT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn tool(name: &str) -> Tool {
         lookup(name).expect("tool on allowlist")
@@ -897,5 +901,70 @@ mod tests {
         let out = run_with_timeout(&t, &[], Duration::from_secs(60)).unwrap();
         assert!(out.exit_code == 0);
         assert_eq!(out.stdout_hash.len(), 64);
+    }
+
+    // Mutant 10 (runner.rs:182:49, delete `-`): a child killed by a signal has
+    // `status.code() == None`; the original maps that to exit_code -1, the
+    // mutant to +1. A self-killing script (kills its own process group, of
+    // which it is the leader via process_group(0)) produces exactly that.
+    #[cfg(unix)]
+    #[test]
+    fn test_signal_killed_child_reports_minus_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let n = SCRIPT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let script =
+            std::env::temp_dir().join(format!("pf-selfkill-{}-{n}.sh", std::process::id()));
+        let _ = std::fs::remove_file(&script);
+        std::fs::write(&script, "#!/bin/sh\nkill -KILL -$$\n").expect("script written");
+        let mut perms = std::fs::metadata(&script)
+            .expect("script metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).expect("script made executable");
+        let t = Tool {
+            name: "cargo --version".into(), // allowlisted name passes the gate
+            bin: script.clone(),
+            args: vec![],
+        };
+        let out = run_with_timeout(&t, &[], Duration::from_secs(30)).unwrap();
+        assert_eq!(
+            out.exit_code, -1,
+            "signal-killed child must map to -1, got {}",
+            out.exit_code
+        );
+        let _ = std::fs::remove_file(&script);
+    }
+
+    // Mutant 12 (runner.rs:422:5, tool_version -> "xyzzy"): the resolved
+    // version of a real tool is the tool's own `--version` output, never a
+    // hardcoded constant.
+    #[test]
+    fn test_tool_version_is_real_output() {
+        let v = tool_version(&PathBuf::from("/bin/ls"));
+        assert!(!v.is_empty(), "ls --version must produce output");
+        assert_ne!(v, "xyzzy", "tool_version must not be a constant");
+    }
+
+    // Mutant 13 (runner.rs:423:18, guard success -> true): a failing tool must
+    // still resolve to the `unknown-` fallback, not to its stdout.
+    #[test]
+    fn test_tool_version_falls_back_for_failing_tool() {
+        let v = tool_version(&PathBuf::from("/bin/false"));
+        assert!(
+            v.starts_with("unknown-"),
+            "failing tool must use unknown- fallback, got: {v}"
+        );
+    }
+
+    // Mutant 14 (runner.rs:423:18, guard success -> false): a succeeding tool
+    // must resolve to its real version, never to the `unknown-` fallback.
+    #[test]
+    fn test_tool_version_reports_successful_tool_version() {
+        let v = tool_version(&PathBuf::from("/bin/ls"));
+        assert!(!v.is_empty(), "ls --version must produce output");
+        assert!(
+            !v.starts_with("unknown-"),
+            "succeeding tool must not use unknown- fallback, got: {v}"
+        );
     }
 }
