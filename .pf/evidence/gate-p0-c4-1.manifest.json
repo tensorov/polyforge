@@ -1,7 +1,7 @@
 {
   "bundle_sha256": "619b54e1cf24579b6cc37de2c13416092057521ce0e8074473d5851bd082b1f0",
   "passed": true,
-  "tail_hash": "e777a340d0dbacf9a647774fbd596890b7005537ab5bfdfd2c6d554e1b435c4e",
+  "tail_hash": "99a7cb2ba5e79071707e5e4492165f34a84fea4b039028d87c3c89f07174d440",
   "task_id": "p0-c4-1",
   "tool_versions": {
     "cargo": "1.95.0",
