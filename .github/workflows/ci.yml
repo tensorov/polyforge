@@ -93,7 +93,7 @@ jobs:
             echo "test files changed; running un-scoped full-crate suite" >&2
             echo "RUN_SCOPE=full" >> "$GITHUB_ENV"
           else
-            MUTANTS=$(cargo mutants --list --json --in-diff git.diff -p polyforge-core -p polyforge-toolrunner | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+            MUTANTS=$(cargo mutants --list --json --in-diff git.diff -p polyforge-core -p polyforge-toolrunner 2>/dev/null | python3 -c 'import json,sys; d=sys.stdin.read().strip(); print(len(json.loads(d)) if d else 0)')
             if [ "$MUTANTS" -eq 0 ]; then
               echo "no mutants in diff scope; skipping mutations job" >&2
               echo "RUN_SCOPE=skip" >> "$GITHUB_ENV"
