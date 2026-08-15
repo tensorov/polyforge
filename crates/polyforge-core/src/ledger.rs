@@ -17,8 +17,17 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// Test-only race-window hook: when nonzero, `Ledger::append` sleeps this many
+/// milliseconds between reading the ledger and writing the new entry. The
+/// chaos test arms it so that concurrent unlocked appends deterministically
+/// read the same head and lose entries; under the exclusive lock the sleep
+/// merely serializes the appends and the same test passes.
+#[cfg(test)]
+static RACE_WINDOW_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A single append-only evidence entry.
 ///
@@ -137,7 +146,22 @@ impl Ledger {
     /// The caller-supplied `seq`/`prev_hash`/`hash` fields are ignored and
     /// overwritten. Returns the assigned sequence number.
     pub fn append(&mut self, mut entry: EvidenceEntry) -> Result<EntryId, LedgerError> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|e| LedgerError::Io(e.to_string()))?;
+        file.lock_exclusive()
+            .map_err(|e| LedgerError::Io(e.to_string()))?;
+
         let entries = self.read_entries()?;
+        #[cfg(test)]
+        {
+            let race_ms = RACE_WINDOW_MS.load(std::sync::atomic::Ordering::SeqCst);
+            if race_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(race_ms));
+            }
+        }
         let next_seq = entries.len() as u64;
         let prev_hash = match entries.last() {
             Some(prev) => compute_hash(prev),
@@ -149,11 +173,6 @@ impl Ledger {
         entry.hash_version = 2;
         entry.hash = compute_hash(&entry);
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|e| LedgerError::Io(e.to_string()))?;
         let line = serde_json::to_string(&entry).map_err(|e| LedgerError::Json(e.to_string()))?;
         writeln!(file, "{line}").map_err(|e| LedgerError::Io(e.to_string()))?;
         self.write_anchor(&Anchor {
@@ -417,6 +436,52 @@ mod tests {
         let len3 = std::fs::metadata(&path).unwrap().len();
         assert!(len2 > len1, "file must strictly grow");
         assert!(len3 > len2, "file must strictly grow");
+    }
+
+    #[test]
+    fn test_chaos_concurrent_appends_all_present_and_contiguous() {
+        // 8 threads x 25 appends on one path. With the exclusive lock every
+        // entry lands, seq is contiguous 0..199, and the chain verifies. The
+        // race-window hook makes the unlocked run deterministically lose
+        // entries (all threads read the same head before any write).
+        const THREADS: usize = 8;
+        const APPENDS: usize = 25;
+        let path = tmp_path("chaos");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(Ledger::new(&path).anchor_path());
+        RACE_WINDOW_MS.store(3, std::sync::atomic::Ordering::SeqCst);
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                scope.spawn(|| {
+                    let mut ledger = Ledger::new(&path);
+                    for i in 0..APPENDS {
+                        ledger
+                            .append(EvidenceEntry::new(
+                                "kind",
+                                json!({"thread": "t", "i": i}),
+                                "polyforge-core-test",
+                                "env-test",
+                                "ts-1",
+                            ))
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        RACE_WINDOW_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+        let ledger = Ledger::new(&path);
+        let entries = ledger.iter_entries().unwrap();
+        assert_eq!(
+            entries.len(),
+            THREADS * APPENDS,
+            "every concurrent append must land; got {} entries",
+            entries.len()
+        );
+        for (i, e) in entries.iter().enumerate() {
+            assert_eq!(e.seq, i as u64, "seq must be contiguous at index {i}");
+        }
+        let state = ledger.verify_chain().unwrap();
+        assert_eq!(state.entry_count, (THREADS * APPENDS) as u64);
     }
 
     #[test]
