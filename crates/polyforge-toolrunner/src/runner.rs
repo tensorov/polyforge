@@ -286,6 +286,26 @@ fn validate_arg(tool: &str, arg: &str) -> Result<(), RunnerError> {
     Ok(())
 }
 
+/// Build-relevant environment variables whose VALUES are folded into the
+/// fingerprint (in addition to the deterministic name-set). Only these names
+/// are ever read from the process environment; arbitrary or secret variables
+/// are never included. Each is folded only when set.
+const ENV_FINGERPRINT_ALLOWLIST: &[&str] = &[
+    "RUSTFLAGS",
+    "RUSTC_WRAPPER",
+    "CARGO_TARGET_DIR",
+    "CARGO_HOME",
+    "RUSTUP_TOOLCHAIN",
+    "RUSTUP_HOME",
+    "CC",
+    "CXX",
+    "TARGET",
+    "CFLAGS",
+    "CXXFLAGS",
+    "LDFLAGS",
+    "RUSTDOCFLAGS",
+];
+
 /// Stable fingerprint over tool version + os + arch + sorted env var names +
 /// PATH, with a fixed-order self-describing tail that folds in Nix/Devbox
 /// identity and lockfile hashes when present:
@@ -310,30 +330,44 @@ pub fn env_fingerprint(tool_version: &str) -> String {
     let cargo_lock_bytes = root
         .as_deref()
         .and_then(|dir| std::fs::read(dir.join("Cargo.lock")).ok());
-    env_fingerprint_from(
+    let allowlist: Vec<(&str, String)> = ENV_FINGERPRINT_ALLOWLIST
+        .iter()
+        .filter_map(|name| std::env::var(name).ok().map(|value| (*name, value)))
+        .collect();
+    let allowlist_refs: Vec<(&str, &str)> = allowlist
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    env_fingerprint_from_pairs(
         tool_version,
-        names,
+        &names,
         &path,
         &nix_segments,
         devbox_bytes.as_deref(),
         cargo_lock_bytes.as_deref(),
+        &allowlist_refs,
     )
 }
 
 /// Pure core of [`env_fingerprint`]: identical inputs produce byte-identical
 /// output. os/arch come from compile-time constants only; every environment
 /// and lockfile input is passed in so tests can drive synthetic vectors
-/// without touching the real environment or filesystem.
-fn env_fingerprint_from(
+/// without touching the real environment or filesystem. `allowlist_pairs` are
+/// the (name, value) pairs of the curated build-env allowlist, folded in
+/// sorted order.
+fn env_fingerprint_from_pairs(
     tool_version: &str,
-    env_names: Vec<String>,
+    env_names: &[String],
     path: &str,
     nix_segments: &[String],
     devbox_bytes: Option<&[u8]>,
     cargo_lock_bytes: Option<&[u8]>,
+    allowlist_pairs: &[(&str, &str)],
 ) -> String {
-    let mut names = env_names;
+    let mut names = env_names.to_vec();
     names.sort();
+    let mut pairs = allowlist_pairs.to_vec();
+    pairs.sort();
     let mut h = Sha256::new();
     h.update(tool_version.as_bytes());
     h.update(std::env::consts::OS.as_bytes());
@@ -343,6 +377,12 @@ fn env_fingerprint_from(
         h.update(b"\0");
     }
     h.update(path.as_bytes());
+    for (name, value) in &pairs {
+        h.update(name.as_bytes());
+        h.update(b"=");
+        h.update(value.as_bytes());
+        h.update(b"\0");
+    }
     let base = hex(&h.finalize());
     format!(
         "{base}|nix={}|devbox={}|cargo.lock={}",
@@ -539,14 +579,52 @@ mod tests {
         devbox: Option<&[u8]>,
         cargo: Option<&[u8]>,
     ) -> String {
-        env_fingerprint_from(
+        env_fingerprint_from_pairs(
             "cargo-1.95.0",
-            env_names.into_iter().map(String::from).collect(),
+            &env_names.into_iter().map(String::from).collect::<Vec<_>>(),
             path,
             nix,
             devbox,
             cargo,
+            &[],
         )
+    }
+
+    /// RED-first: two synthetic env sets with identical names but different
+    /// RUSTFLAGS values must produce different fingerprints. This drives the
+    /// value-folding of the allowlist through the pure core.
+    #[test]
+    fn test_env_fingerprint_folds_allowlist_values() {
+        let base = env_fingerprint_from_pairs(
+            "cargo-1.95.0",
+            &[],
+            "/usr/bin",
+            &[],
+            None,
+            None,
+            &[("RUSTFLAGS", "-Ctarget-cpu=native")],
+        );
+        let other = env_fingerprint_from_pairs(
+            "cargo-1.95.0",
+            &[],
+            "/usr/bin",
+            &[],
+            None,
+            None,
+            &[("RUSTFLAGS", "-Copt-level=3")],
+        );
+        assert_ne!(
+            base, other,
+            "different RUSTFLAGS values must fold into different fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_env_fingerprint_allowlist_values_deterministic() {
+        let pairs = &[("RUSTFLAGS", "-Ctarget-cpu=native"), ("CC", "clang")];
+        let a = env_fingerprint_from_pairs("cargo-1.95.0", &[], "/usr/bin", &[], None, None, pairs);
+        let b = env_fingerprint_from_pairs("cargo-1.95.0", &[], "/usr/bin", &[], None, None, pairs);
+        assert_eq!(a, b, "identical allowlist pairs must hash identically");
     }
 
     const NIX32_HASH: &str = "00000000000000000000000000000000";
