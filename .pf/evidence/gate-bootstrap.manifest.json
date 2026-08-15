@@ -1,7 +1,7 @@
 {
-  "bundle_sha256": "c0a1c78863e3aec5ce95f1fa13aebb14a01cf00bb54c969926955603fb69d802",
+  "bundle_sha256": "04b635e15ba7cdf2a51b76f54494e792c03e409b1026f6a3b3257c7efae68efd",
   "passed": true,
-  "tail_hash": "99a7cb2ba5e79071707e5e4492165f34a84fea4b039028d87c3c89f07174d440",
+  "tail_hash": "4dc5f3038cdf16d9a32075059ea88fe3bece3138217d3a9f2a600412b18f0571",
   "task_id": "bootstrap",
   "tool_versions": {
     "cargo": "1.95.0",
