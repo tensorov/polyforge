@@ -13,7 +13,8 @@
 //!   evidence — before the caller receives `ToolFailed`.
 //! * The model never passes raw shell strings: args go through the runner's
 //!   typed-arg validation and the binary is spawned directly (no shell).
-//! * No wall-clock: the attestation reuses the claim's `ts` datum.
+//! * Attestations and discrepancies carry a real wall-clock `ts` (epoch
+//!   millis from `SystemTime::now()`), never the claim's `ts` datum.
 //! * The chain is verified before any append (zero partial writes on
 //!   integrity failure).
 
@@ -35,6 +36,15 @@ fn truncate(s: &str, limit: usize) -> String {
         end -= 1;
     }
     s[..end].to_string()
+}
+
+/// Wall-clock timestamp datum (epoch millis), same format as the MCP
+/// server's `now_ts`.
+fn now_ts() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 /// Verify a claim by running an allowlisted tool, then append the promoted
@@ -65,7 +75,7 @@ pub fn verify_and_append(
             output.exit_code,
             truncate(&stderr, STDERR_LEDGER_LIMIT),
             format!("toolrunner:{}", tool.name),
-            claim.ts.clone(),
+            now_ts(),
         );
         let refuted =
             promote(&claim, &discrepancy).map_err(|e| RunnerError::Promote(format!("{e:?}")))?;
@@ -81,7 +91,7 @@ pub fn verify_and_append(
         claim.task_id.clone(),
         claim.commit_sha.clone(),
         claim.diff_hash.clone(),
-        claim.ts.clone(),
+        now_ts(),
     );
     let verified =
         promote(&claim, &attestation).map_err(|e| RunnerError::Promote(format!("{e:?}")))?;
@@ -287,6 +297,64 @@ mod tests {
         assert_eq!(entries[1].payload["state"], "Verified");
         assert_eq!(entries[1].payload["exit_code"], 0);
         ledger.verify_chain().unwrap();
+    }
+
+    // T6: the attestation ts must be a real wall-clock epoch-millis value,
+    // never the claim's `ts` datum ("ts-1" in fixtures).
+    #[test]
+    fn test_attestation_ts_is_wallclock_epoch_millis() {
+        let path = tmp_path("wallclock-att");
+        let mut ledger = Ledger::new(&path);
+        let claim_id = append_claim(&mut ledger, "T6");
+
+        let verified =
+            verify_and_append(&mut ledger, "T6", claim_id, &tool("cargo --version"), &[]).unwrap();
+
+        assert_ne!(
+            verified.ts, "ts-1",
+            "attestation must not reuse the claim ts datum"
+        );
+        let ts: u64 = verified
+            .ts
+            .parse()
+            .expect("attestation ts must be numeric epoch millis");
+        assert!(
+            ts > 1_700_000_000_000,
+            "epoch millis must be a plausible modern timestamp, got {ts}"
+        );
+    }
+
+    // T6: the discrepancy ts (failed-run trace) must also be wall-clock.
+    #[test]
+    fn test_discrepancy_ts_is_wallclock_epoch_millis() {
+        let path = tmp_path("wallclock-disc");
+        let mut ledger = Ledger::new(&path);
+        let claim_id = append_claim(&mut ledger, "T6");
+
+        let err = verify_and_append(
+            &mut ledger,
+            "T6",
+            claim_id,
+            &tool("cargo build"),
+            &["--definitely-not-a-flag".to_string()],
+        )
+        .unwrap_err();
+        assert!(matches!(err, RunnerError::ToolFailed { .. }));
+
+        let entries = ledger.iter_entries().unwrap();
+        assert_eq!(entries[1].kind, "Discrepancy");
+        assert_ne!(
+            entries[1].ts, "ts-1",
+            "discrepancy must not reuse the claim ts datum"
+        );
+        let ts: u64 = entries[1]
+            .ts
+            .parse()
+            .expect("discrepancy ts must be numeric epoch millis");
+        assert!(
+            ts > 1_700_000_000_000,
+            "epoch millis must be a plausible modern timestamp, got {ts}"
+        );
     }
 
     #[test]
