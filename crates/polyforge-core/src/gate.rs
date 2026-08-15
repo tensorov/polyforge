@@ -138,8 +138,23 @@ impl From<LedgerError> for GateError {
     }
 }
 
+/// Scope of a gate evaluation: which evidence chain counts toward the verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateScope {
+    /// Count only entries whose payload matches the given commit/diff key.
+    Keyed {
+        commit_sha: String,
+        diff_hash: String,
+    },
+    /// Key on the task's latest claim (max-seq `ModelClaimed`) and fail if any
+    /// newer claim exists after the last `Verified`/`Validated` entry in that
+    /// key's chain — a stale pass never advances.
+    LatestClaim,
+}
+
 /// Evaluate the stage gate for `task_id`, requiring every state in `required`.
 ///
+/// Equivalent to [`evaluate_complete_scoped`] with [`GateScope::LatestClaim`].
 /// Deterministic: the result is a pure function of the ledger contents and
 /// `required`. The chain is verified first; any integrity failure short-circuits
 /// to [`GateError::LedgerIntegrity`].
@@ -148,9 +163,55 @@ pub fn evaluate_complete(
     task_id: &str,
     required: &[EvidenceState],
 ) -> Result<Evaluation, GateError> {
+    evaluate_complete_scoped(ledger, task_id, required, GateScope::LatestClaim)
+}
+
+/// Evaluate the stage gate for `task_id` under `scope`.
+///
+/// The chain is verified first; any integrity failure short-circuits to
+/// [`GateError::LedgerIntegrity`]. The verdict is then a pure function of the
+/// ledger contents, `required`, and `scope`:
+///
+/// * [`GateScope::Keyed`] counts only entries whose payload `commit_sha` /
+///   `diff_hash` match the given key. A task with no tri-state entries under
+///   that key is [`GateError::TaskNotFound`].
+/// * [`GateScope::LatestClaim`] keys on the task's latest claim (max-seq
+///   `ModelClaimed`) and fails closed against stale passes:
+///   - a newer claim with the same key as the last `Verified`/`Validated`
+///     entry in that key's chain fails (the verdict is stale);
+///   - a newer claim with a different key fails (the old chain is no longer
+///     authoritative);
+///   - a key whose chain ends in `Refuted` never passes;
+///   - with no newer claim the gate passes on the key's chain.
+///     A task with no claim at all falls back to counting all its tri-state
+///     entries (the pre-scope behavior).
+pub fn evaluate_complete_scoped(
+    ledger: &Ledger,
+    task_id: &str,
+    required: &[EvidenceState],
+    scope: GateScope,
+) -> Result<Evaluation, GateError> {
     // Integrity first: any tamper/rewind/reorder aborts before counting.
     let chain = ledger.verify_chain().map_err(GateError::from)?;
     let entries = ledger.iter_entries().map_err(GateError::from)?;
+
+    // Resolve the key: explicit for Keyed, the latest claim's key for
+    // LatestClaim (None when the task has no claim at all).
+    let key: Option<(String, String)> = match &scope {
+        GateScope::Keyed {
+            commit_sha,
+            diff_hash,
+        } => Some((commit_sha.clone(), diff_hash.clone())),
+        GateScope::LatestClaim => entries
+            .iter()
+            .filter(|e| task_of(e) == Some(task_id))
+            .filter(|e| state_of(e) == Some(EvidenceState::ModelClaimed))
+            .max_by_key(|e| e.seq)
+            .map(|e| {
+                let (commit, diff) = key_of(e);
+                (commit.to_string(), diff.to_string())
+            }),
+    };
 
     let mut counts = Counts::zero();
     for entry in &entries {
@@ -162,6 +223,12 @@ pub fn evaluate_complete(
         };
         if entry_task != task_id {
             continue;
+        }
+        if let Some((commit, diff)) = &key {
+            let (entry_commit, entry_diff) = key_of(entry);
+            if entry_commit != commit.as_str() || entry_diff != diff.as_str() {
+                continue;
+            }
         }
         match state {
             EvidenceState::ModelClaimed => counts.claimed += 1,
@@ -178,16 +245,54 @@ pub fn evaluate_complete(
         });
     }
 
+    // Stale-pass check (LatestClaim only): a newer claim after the last
+    // Verified/Validated in the key's chain means the verdict is stale.
+    let stale = match &scope {
+        GateScope::LatestClaim => match &key {
+            Some((commit, diff)) => {
+                let last_vv = entries
+                    .iter()
+                    .filter(|e| task_of(e) == Some(task_id))
+                    .filter(|e| {
+                        let (entry_commit, entry_diff) = key_of(e);
+                        entry_commit == commit.as_str() && entry_diff == diff.as_str()
+                    })
+                    .filter(|e| {
+                        matches!(
+                            state_of(e),
+                            Some(EvidenceState::Verified) | Some(EvidenceState::Validated)
+                        )
+                    })
+                    .max_by_key(|e| e.seq);
+                match last_vv {
+                    Some(last) => entries
+                        .iter()
+                        .filter(|e| task_of(e) == Some(task_id))
+                        .filter(|e| state_of(e) == Some(EvidenceState::ModelClaimed))
+                        .any(|e| e.seq > last.seq),
+                    None => false,
+                }
+            }
+            None => false,
+        },
+        GateScope::Keyed { .. } => false,
+    };
+
     let mut missing = Vec::new();
     for state in required {
         if counts.count_for(*state) == 0 {
             missing.push(format!("{state:?}"));
         }
     }
+    // A stale verdict satisfies no required state: the chain's Verified/Validated
+    // entries belong to an older claim.
+    if stale {
+        missing = required.iter().map(|s| format!("{s:?}")).collect();
+    }
 
     Ok(Evaluation {
         task_id: task_id.to_string(),
-        passed: missing.is_empty(),
+        passed: missing.is_empty() && !stale,
         counts,
         missing,
         chain_tail_hash: chain.head_hash,
@@ -208,6 +313,21 @@ fn state_of(entry: &LedgerEntry) -> Option<EvidenceState> {
 /// Extract the task id from a ledger entry's payload, if present.
 fn task_of(entry: &LedgerEntry) -> Option<&str> {
     entry.payload.get("task_id")?.as_str()
+}
+
+/// Extract the (commit_sha, diff_hash) key from a ledger entry's payload.
+fn key_of(entry: &LedgerEntry) -> (&str, &str) {
+    let commit = entry
+        .payload
+        .get("commit_sha")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let diff = entry
+        .payload
+        .get("diff_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    (commit, diff)
 }
 
 #[cfg(test)]
@@ -460,5 +580,144 @@ mod tests {
         let d = promote(&v, &validation("T4")).unwrap();
         let entry = d.to_ledger_entry();
         assert_eq!(state_of(&entry), Some(EvidenceState::Validated));
+    }
+
+    #[test]
+    fn test_gate_latest_claim_rejects_stale_pass() {
+        // claim + Verified (same key), then a NEW claim with the same key: the
+        // Verified belongs to an older claim, so LatestClaim must fail.
+        let path = tmp_path("stale-pass");
+        let mut ledger = Ledger::new(&path);
+        let c1 = claim("T4");
+        let v1 = promote(&c1, &attestation("T4")).unwrap();
+        ledger.append(c1.to_ledger_entry()).unwrap();
+        ledger.append(v1.to_ledger_entry()).unwrap();
+        let c2 = TriState::new_claim("T4", "abc123", "diff-1", "ts-5");
+        ledger.append(c2.to_ledger_entry()).unwrap();
+
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::LatestClaim,
+        )
+        .unwrap();
+        assert!(
+            !eval.passed,
+            "a stale Verified must not pass a LatestClaim gate"
+        );
+        assert_eq!(eval.missing, vec!["Verified"]);
+        assert_eq!(eval.counts.verified, 1);
+    }
+
+    #[test]
+    fn test_gate_latest_claim_different_key_fails() {
+        // claim + Verified (key A), then a newer claim with a DIFFERENT key (B):
+        // LatestClaim keys on B, whose chain has no Verified -> fail.
+        let path = tmp_path("diff-key");
+        let mut ledger = Ledger::new(&path);
+        let c1 = claim("T4");
+        let v1 = promote(&c1, &attestation("T4")).unwrap();
+        ledger.append(c1.to_ledger_entry()).unwrap();
+        ledger.append(v1.to_ledger_entry()).unwrap();
+        let c2 = TriState::new_claim("T4", "def456", "diff-2", "ts-5");
+        ledger.append(c2.to_ledger_entry()).unwrap();
+
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::LatestClaim,
+        )
+        .unwrap();
+        assert!(
+            !eval.passed,
+            "a different-key claim must not pass on the old chain"
+        );
+        assert_eq!(eval.missing, vec!["Verified"]);
+    }
+
+    #[test]
+    fn test_gate_keyed_scope_filters_by_commit_diff() {
+        // Two claims for the same task with different keys; Keyed{commit A}
+        // must evaluate only A's chain.
+        let path = tmp_path("keyed");
+        let mut ledger = Ledger::new(&path);
+        let c1 = claim("T4");
+        let v1 = promote(&c1, &attestation("T4")).unwrap();
+        ledger.append(c1.to_ledger_entry()).unwrap();
+        ledger.append(v1.to_ledger_entry()).unwrap();
+        let c2 = TriState::new_claim("T4", "def456", "diff-2", "ts-5");
+        ledger.append(c2.to_ledger_entry()).unwrap();
+
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::Keyed {
+                commit_sha: "abc123".to_string(),
+                diff_hash: "diff-1".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(eval.passed, "Keyed on the verified key must pass");
+        assert_eq!(eval.counts.claimed, 1);
+        assert_eq!(eval.counts.verified, 1);
+
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::Keyed {
+                commit_sha: "def456".to_string(),
+                diff_hash: "diff-2".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(!eval.passed, "Keyed on the unverified key must fail");
+        assert_eq!(eval.missing, vec!["Verified"]);
+        assert_eq!(eval.counts.claimed, 1);
+        assert_eq!(eval.counts.verified, 0);
+    }
+
+    #[test]
+    fn test_gate_latest_claim_refuted_chain_never_passes() {
+        // claim + Refuted (same key), then a newer claim (same key): the key's
+        // chain has no Verified/Validated, so LatestClaim must fail.
+        let path = tmp_path("refuted-chain");
+        let mut ledger = Ledger::new(&path);
+        let c1 = claim("T4");
+        let d1 = promote(&c1, &discrepancy("T4", 1)).unwrap();
+        ledger.append(c1.to_ledger_entry()).unwrap();
+        ledger.append(d1.to_ledger_entry()).unwrap();
+        let c2 = TriState::new_claim("T4", "abc123", "diff-1", "ts-5");
+        ledger.append(c2.to_ledger_entry()).unwrap();
+
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::LatestClaim,
+        )
+        .unwrap();
+        assert!(!eval.passed, "a refuted chain must never pass");
+        assert_eq!(eval.missing, vec!["Verified"]);
+        assert_eq!(eval.counts.verified, 0);
+    }
+
+    #[test]
+    fn test_gate_latest_claim_without_claim_counts_all() {
+        // No ModelClaimed for the task: LatestClaim falls back to counting all
+        // tri-state entries (the pre-scope behavior).
+        let ledger = ledger_with("T4", false);
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::LatestClaim,
+        )
+        .unwrap();
+        assert!(eval.passed);
+        assert_eq!(eval.counts.verified, 1);
     }
 }

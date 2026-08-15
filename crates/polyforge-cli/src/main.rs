@@ -8,7 +8,7 @@
 //!                           append an evidence entry to the ledger
 //!   pf ledger tail          print the last entry's hash (ChainState.head_hash)
 //!   pf ledger summary       print per-task counts (latest ledger state per task)
-//!   pf gate <task_id> [--required verified,validated]
+//!   pf gate <task_id> [--required verified,validated] [--commit <sha>] [--diff <hash>]
 //!                           run evaluate_complete; on PASS write a reproducible bundle
 //!   pf coverage-check --report <llvm-cov.json>
 //!                           evaluate a cargo llvm-cov --json report against the
@@ -34,7 +34,7 @@ use polyforge_core::coverage::{
     CoverageFloor, CoverageReport, CoverageScope, CrateCoverage, FileCoverage,
 };
 use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceState};
-use polyforge_core::gate::{evaluate_complete, Evaluation, GateError};
+use polyforge_core::gate::{evaluate_complete_scoped, Evaluation, GateError, GateScope};
 use polyforge_core::ledger::{EvidenceEntry as LedgerEntry, Ledger};
 
 const DEFAULT_LEDGER: &str = ".pf/ledger.jsonl";
@@ -453,9 +453,13 @@ fn write_fail_manifest(task_id: &str, eval: &Evaluation) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_gate(task_id: &str, required: &[EvidenceState]) -> Result<ExitCode, String> {
+fn cmd_gate(
+    task_id: &str,
+    required: &[EvidenceState],
+    scope: GateScope,
+) -> Result<ExitCode, String> {
     let ledger = Ledger::new(ledger_path());
-    let eval = match evaluate_complete(&ledger, task_id, required) {
+    let eval = match evaluate_complete_scoped(&ledger, task_id, required, scope) {
         Ok(e) => e,
         Err(GateError::TaskNotFound { .. }) => {
             eprintln!("gate FAILED for task {task_id}: no tri-state evidence found");
@@ -699,10 +703,12 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
         }
         "gate" => {
             if args.len() < 2 {
-                return Err("usage: pf gate <task_id> [--required verified,validated]".to_string());
+                return Err("usage: pf gate <task_id> [--required verified,validated] [--commit <sha>] [--diff <hash>]".to_string());
             }
             let task_id = args[1].clone();
             let mut required = vec![EvidenceState::Verified];
+            let mut commit = None;
+            let mut diff = None;
             let mut iter = args.iter().skip(2);
             while let Some(arg) = iter.next() {
                 match arg.as_str() {
@@ -712,10 +718,32 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
                                 .ok_or_else(|| "--required requires a value".to_string())?,
                         )?;
                     }
+                    "--commit" => {
+                        commit = Some(
+                            iter.next()
+                                .ok_or_else(|| "--commit requires a value".to_string())?
+                                .clone(),
+                        );
+                    }
+                    "--diff" => {
+                        diff = Some(
+                            iter.next()
+                                .ok_or_else(|| "--diff requires a value".to_string())?
+                                .clone(),
+                        );
+                    }
                     other => return Err(format!("unknown flag: {other}")),
                 }
             }
-            cmd_gate(&task_id, &required)
+            let scope = match (commit, diff) {
+                (Some(commit_sha), Some(diff_hash)) => GateScope::Keyed {
+                    commit_sha,
+                    diff_hash,
+                },
+                (None, None) => GateScope::LatestClaim,
+                _ => return Err("--commit and --diff must be provided together".to_string()),
+            };
+            cmd_gate(&task_id, &required, scope)
         }
         "coverage-check" => {
             if args.len() < 3 || args[1] != "--report" {
@@ -737,7 +765,7 @@ fn print_usage() {
          \x20              [--experiment <id>] [--model <fp>] [--run <id>] [--budget <amt>] [--metadata <json>]\n\
          \x20 pf ledger tail\n\
          \x20 pf ledger summary\n\
-         \x20 pf gate <task_id> [--required verified,validated]\n\
+         \x20 pf gate <task_id> [--required verified,validated] [--commit <sha>] [--diff <hash>]\n\
          \x20 pf coverage-check --report <llvm-cov.json>\n\
          \n\
          kinds: model_claim | tool_attestation | eval_attestation | discrepancy | validation\n\

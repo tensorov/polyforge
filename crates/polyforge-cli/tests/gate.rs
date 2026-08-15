@@ -93,6 +93,27 @@ fn seed_verified(env: &Env, task: &str) {
     );
 }
 
+/// Append a second claim for `task` with the given commit/diff key.
+fn seed_second_claim(env: &Env, task: &str, commit: &str, diff: &str) {
+    assert_ok(
+        &pf(
+            env,
+            &[
+                "append",
+                "model_claim",
+                "claim-datum-2",
+                "--task",
+                task,
+                "--commit",
+                commit,
+                "--diff",
+                diff,
+            ],
+        ),
+        "pf append second model_claim",
+    );
+}
+
 fn read_json(path: &Path) -> serde_json::Value {
     let raw =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
@@ -263,4 +284,110 @@ fn test_bundle_snapshot_matches_ledger() {
         assert_eq!(bv, lv, "bundle entry {i} must match the ledger record");
         assert_eq!(bv["payload"]["task_id"].as_str(), Some("T4"));
     }
+}
+
+#[test]
+fn test_gate_keyed_scope_filters_by_commit_diff() {
+    let env = Env::new();
+    seed_verified(&env, "T5"); // claim abc123/d1 + verified
+    seed_second_claim(&env, "T5", "def456", "d2");
+
+    // Keyed on the verified key: passes.
+    let out = pf(
+        &env,
+        &[
+            "gate",
+            "T5",
+            "--required",
+            "verified",
+            "--commit",
+            "abc123",
+            "--diff",
+            "d1",
+        ],
+    );
+    assert_ok(&out, "pf gate T5 --commit abc123 --diff d1");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("gate PASSED"),
+        "keyed gate on the verified key must pass"
+    );
+    assert_pass_manifest(&env, "T5");
+
+    // Keyed on the unverified key: fails with missing Verified.
+    let out = pf(
+        &env,
+        &[
+            "gate",
+            "T5",
+            "--required",
+            "verified",
+            "--commit",
+            "def456",
+            "--diff",
+            "d2",
+        ],
+    );
+    assert_eq!(
+        exit_code(&out),
+        1,
+        "keyed gate on the unverified key must fail\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("missing: Verified"),
+        "stderr must list missing Verified, got: {}",
+        stderr(&out)
+    );
+    let manifest: serde_json::Value = read_json(&env.manifest("T5"));
+    assert_eq!(
+        manifest["passed"], false,
+        "keyed FAIL manifest must say passed=false"
+    );
+}
+
+#[test]
+fn test_gate_latest_claim_rejects_stale_pass() {
+    let env = Env::new();
+    seed_verified(&env, "T7"); // claim abc123/d1 + verified
+    seed_second_claim(&env, "T7", "abc123", "d1"); // same key: Verified is stale
+
+    let out = pf(&env, &["gate", "T7", "--required", "verified"]);
+    assert_eq!(
+        exit_code(&out),
+        1,
+        "a stale Verified must fail the default LatestClaim gate\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("missing: Verified"),
+        "stderr must list missing Verified, got: {}",
+        stderr(&out)
+    );
+    let manifest: serde_json::Value = read_json(&env.manifest("T7"));
+    assert_eq!(
+        manifest["passed"], false,
+        "stale-pass manifest must say passed=false"
+    );
+}
+
+#[test]
+fn test_gate_requires_commit_and_diff_together() {
+    let env = Env::new();
+    seed_verified(&env, "T8");
+
+    let out = pf(
+        &env,
+        &["gate", "T8", "--required", "verified", "--commit", "abc123"],
+    );
+    assert_eq!(
+        exit_code(&out),
+        2,
+        "a partial key must be a usage error\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("--commit and --diff must be provided together"),
+        "stderr must explain the partial-key error, got: {}",
+        stderr(&out)
+    );
 }
