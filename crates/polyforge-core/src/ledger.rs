@@ -43,6 +43,10 @@ pub struct EvidenceEntry {
     pub ts: String,
     /// SHA-256 hex binding this entry's identity.
     pub hash: String,
+    /// Canonical hash encoding version. `0` (serde default) marks a legacy v1
+    /// entry; fresh entries are `2`. Only version 2 verifies.
+    #[serde(default)]
+    pub hash_version: u8,
 }
 
 impl EvidenceEntry {
@@ -64,6 +68,7 @@ impl EvidenceEntry {
             env_fingerprint: env_fingerprint.into(),
             ts: ts.into(),
             hash: String::new(),
+            hash_version: 2,
         }
     }
 }
@@ -108,6 +113,9 @@ pub enum LedgerError {
     },
     /// The ledger file is empty (no genesis entry yet).
     EmptyChain,
+    /// The entry's hash encoding version is not supported. Only version 2
+    /// verifies; legacy v1 entries stay readable but never verify.
+    UnsupportedHashVersion { version: u8 },
 }
 
 /// An append-only, Merkle-chained evidence ledger backed by a JSONL file.
@@ -131,18 +139,14 @@ impl Ledger {
     pub fn append(&mut self, mut entry: EvidenceEntry) -> Result<EntryId, LedgerError> {
         let entries = self.read_entries()?;
         let next_seq = entries.len() as u64;
-        // prev_hash = SHA-256 of the previous entry's canonical JSON (plan contract)
         let prev_hash = match entries.last() {
-            Some(prev) => {
-                let canonical =
-                    serde_json::to_string(prev).map_err(|e| LedgerError::Json(e.to_string()))?;
-                hex(&Sha256::digest(canonical.as_bytes()))
-            }
+            Some(prev) => compute_hash(prev),
             None => String::new(),
         };
 
         entry.seq = next_seq;
         entry.prev_hash = prev_hash;
+        entry.hash_version = 2;
         entry.hash = compute_hash(&entry);
 
         let mut file = OpenOptions::new()
@@ -169,6 +173,11 @@ impl Ledger {
         }
         let mut prev_hash = String::new();
         for (i, entry) in entries.iter().enumerate() {
+            if entry.hash_version != 2 {
+                return Err(LedgerError::UnsupportedHashVersion {
+                    version: entry.hash_version,
+                });
+            }
             let expected_seq = i as u64;
             if entry.seq != expected_seq {
                 return Err(LedgerError::ChainBroken {
@@ -192,11 +201,7 @@ impl Ledger {
                     found: entry.hash.clone(),
                 });
             }
-            prev_hash = hex(&Sha256::digest(
-                serde_json::to_string(entry)
-                    .map_err(|e| LedgerError::Json(e.to_string()))?
-                    .as_bytes(),
-            ));
+            prev_hash = compute_hash(entry);
         }
         let head = entries.last().expect("non-empty checked above");
         let recomputed = ChainState {
@@ -280,21 +285,32 @@ impl Ledger {
     }
 }
 
-/// Compute the identity hash of an entry:
-/// `SHA-256(seq || prev_hash || kind || canonical(payload) || tool_version || env_fingerprint || ts)`.
+/// Compute the identity hash of an entry using the version-tagged canonical
+/// encoding: `SHA-256(hash_version || len(seq) || seq || len(prev_hash) ||
+/// prev_hash || len(kind) || kind || len(payload) || payload ||
+/// len(tool_version) || tool_version || len(env_fingerprint) ||
+/// env_fingerprint || len(ts) || ts)`. Each `len(x)` is an 8-byte
+/// little-endian length prefix; `seq` is encoded as its decimal string. The
+/// length prefixes make every field boundary unambiguous, so no two distinct
+/// entries can share a hash (the v1 concatenation allowed adjacent-field
+/// collisions).
 fn compute_hash(entry: &EvidenceEntry) -> String {
     let payload = serde_json::to_string(&entry.payload).unwrap_or_else(|_| "null".to_string());
-    let input = format!(
-        "{}{}{}{}{}{}{}",
-        entry.seq,
-        entry.prev_hash,
-        entry.kind,
+    let mut input = Vec::with_capacity(64);
+    input.push(entry.hash_version);
+    for field in [
+        entry.seq.to_string(),
+        entry.prev_hash.clone(),
+        entry.kind.clone(),
         payload,
-        entry.tool_version,
-        entry.env_fingerprint,
-        entry.ts,
-    );
-    hex(&Sha256::digest(input.as_bytes()))
+        entry.tool_version.clone(),
+        entry.env_fingerprint.clone(),
+        entry.ts.clone(),
+    ] {
+        input.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        input.extend_from_slice(field.as_bytes());
+    }
+    hex(&Sha256::digest(&input))
 }
 
 /// Hex-encode a digest.
@@ -482,5 +498,97 @@ mod tests {
         let ledger = Ledger::new(&path);
         let err = ledger.read_anchor().unwrap_err();
         assert!(matches!(err, LedgerError::Io(_)));
+    }
+
+    /// Build a v2 ledger entry with explicit content fields (hash_version 2).
+    fn v2_entry(
+        seq: u64,
+        prev_hash: &str,
+        kind: &str,
+        payload: serde_json::Value,
+        tool_version: &str,
+        env_fingerprint: &str,
+        ts: &str,
+    ) -> EvidenceEntry {
+        EvidenceEntry {
+            seq,
+            prev_hash: prev_hash.to_string(),
+            kind: kind.to_string(),
+            payload,
+            tool_version: tool_version.to_string(),
+            env_fingerprint: env_fingerprint.to_string(),
+            ts: ts.to_string(),
+            hash: String::new(),
+            hash_version: 2,
+        }
+    }
+
+    #[test]
+    fn test_v2_hash_separates_adjacent_field_boundary() {
+        // The ADJACENT-field boundary pair (tool_version|env_fingerprint|ts).
+        // Under the old v1 concatenation both entries hash to 1460f9d1...: the
+        // boundary between `fp="f", ts="c"` and `fp="fc", ts=""` is ambiguous.
+        // The v2 length-prefixed encoding must separate them.
+        let a = v2_entry(1, "", "a", json!({"x": 1}), "t", "f", "c");
+        let b = v2_entry(1, "", "a", json!({"x": 1}), "t", "fc", "");
+        assert_ne!(
+            compute_hash(&a),
+            compute_hash(&b),
+            "v2 hash must separate the adjacent-field boundary pair"
+        );
+    }
+
+    #[test]
+    fn test_v2_hash_exact_values() {
+        // Exact-hash guards: expected values derived BY HAND from the
+        // length-prefixed canonical encoding spec (hash_version byte, then
+        // 8-byte LE length prefix + field bytes per field, in order
+        // seq|prev_hash|kind|payload|tool_version|env_fingerprint|ts). Any
+        // mutant that drops a length prefix or reorders fields changes these.
+        let a = v2_entry(1, "", "a", json!({"x": 1}), "t", "f", "c");
+        assert_eq!(
+            compute_hash(&a),
+            "a68440551fe396410d3e2b8a4cfc119a23241dad85b3328f1a8fdb12af374aa2"
+        );
+        let b = v2_entry(1, "", "a", json!({"x": 1}), "t", "fc", "");
+        assert_eq!(
+            compute_hash(&b),
+            "eae6be3f7958c7f589298cb12de6d9bf45f023ac153ce623b2878cd7649983dd"
+        );
+        let c = v2_entry(7, "ab", "kind", json!({"z": 2, "a": 1}), "tool", "fp", "ts");
+        assert_eq!(
+            compute_hash(&c),
+            "b0e10536abe9ccf30532a66f87df6da42421eef553b8c868ae19ae842186f241"
+        );
+    }
+
+    #[test]
+    fn test_fresh_entry_hashes_as_v2_and_verifies() {
+        // `new()` must set hash_version = 2 explicitly (serde default 0 would
+        // silently hash fresh entries as legacy v1), and a fresh chain must
+        // verify.
+        let path = tmp_path("v2-fresh");
+        let mut ledger = Ledger::new(&path);
+        let e = EvidenceEntry::new("kind", json!({"x": 1}), "t", "f", "ts");
+        assert_eq!(e.hash_version, 2, "new() must set hash_version = 2");
+        ledger.append(e).unwrap();
+        let state = ledger.verify_chain().unwrap();
+        assert_eq!(state.entry_count, 1);
+        assert_eq!(state.head_hash.len(), 64);
+    }
+
+    #[test]
+    fn test_legacy_v1_entry_fails_closed() {
+        // A legacy v1-format line (no hash_version key -> serde default 0)
+        // stays readable for error reporting but must never verify.
+        let path = tmp_path("v1-legacy");
+        let ledger = Ledger::new(&path);
+        let legacy = r#"{"seq":0,"prev_hash":"","kind":"a","payload":{"x":1},"tool_version":"t","env_fingerprint":"f","ts":"c","hash":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
+        std::fs::write(&path, legacy.to_string() + "\n").unwrap();
+        let err = ledger.verify_chain().unwrap_err();
+        assert!(
+            matches!(err, LedgerError::UnsupportedHashVersion { version: 0 }),
+            "legacy v1 entry must fail closed with UnsupportedHashVersion, got {err:?}"
+        );
     }
 }

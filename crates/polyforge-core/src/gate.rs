@@ -129,6 +129,11 @@ impl From<LedgerError> for GateError {
                 expected: "<genesis entry>".to_string(),
                 found: "<empty chain>".to_string(),
             },
+            LedgerError::UnsupportedHashVersion { version } => GateError::LedgerIntegrity {
+                seq: 0,
+                expected: "hash_version 2".to_string(),
+                found: format!("hash_version {version}"),
+            },
         }
     }
 }
