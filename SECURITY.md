@@ -52,3 +52,59 @@ binary, the MCP server, and the evidence ledger implementation.
 Out of scope: user code that embeds PolyForge, third-party dependencies
 (please report those to their respective projects), and misconfiguration of a
 user's own ledger storage.
+
+## Threat model
+
+This section states what PolyForge protects, what it does not protect, and the
+attacker classes it is designed against. It is a living document: update it
+whenever the trust boundaries change.
+
+### Assets
+
+- **Ledger integrity.** The append-only Merkle chain is the root of trust.
+  Every entry commits to the hash of the previous entry, so tampering with one
+  byte of any entry breaks the chain and every subsequent gate or verify fails
+  with `LedgerIntegrity`.
+- **Gate verdicts.** A gate result is only as good as the chain it was computed
+  from. A passing gate must mean the required evidence states were reached on
+  an unmodified chain.
+- **Attestation provenance.** Each entry records who claimed, which tool
+  attested, and (for evaluations) the experiment, run, model fingerprint, and
+  budget. Provenance is what makes a verdict auditable.
+
+### Attacker classes
+
+- **Repo-writer.** Anyone who can push to the repository. They can rewrite the
+  ledger and re-commit the anchor, so tamper evidence is only meaningful within
+  a trusted checkout (see "Not protected" below).
+- **MCP network attacker.** Anyone who can reach the MCP TCP endpoint. The TCP
+  transport is token-gated and loopback-default, so this class is limited to
+  processes on the same host unless the operator changes the bind address.
+- **The model itself.** The model is the primary untrusted party. It can only
+  append `ModelClaim` entries over MCP; it cannot create `Verified`, `Refuted`,
+  or `Validated` entries, and it cannot self-promote.
+- **Tool-allowlist bypass.** An attacker who tries to get arbitrary code
+  executed through the toolrunner. The toolrunner runs only allowlisted
+  binaries (cargo/rustc/gcc) with typed arguments and no shell.
+
+### Trust boundaries
+
+- The ledger file and the checkout it lives in are trusted. The chain proves
+  the ledger was not rewritten; it does not prove the checkout is authentic.
+- The operator and the toolrunner are trusted to produce attestations. The
+  model is not trusted.
+- The MCP stdio transport is trusted because it inherits the OS pipe
+  permissions of the process that spawned it. The TCP transport is trusted only
+  up to the token gate.
+- External anchoring (Sigstore, CI attestation on the tail hash) is roadmap
+  Phase 3 and is not a trust boundary today.
+
+### Protected vs not protected
+
+| Protected | Not protected |
+| --------- | ------------- |
+| Append-only Merkle chain: one-byte tamper breaks the chain and fails closed with `LedgerIntegrity` | Trusted checkout: no external anchoring of the tail hash until Phase 3; a repo-writer can rewrite the ledger and re-commit the anchor |
+| `promote` gatekeeper: the single promotion path in `polyforge-core`; models over MCP can only append `ModelClaim` | No sandbox: the tool allowlist is not a sandbox; an allowlisted binary runs with the privileges of the process that invoked it |
+| State injection: `ToolAttestation`, `Validation`, `EvalAttestation`, and `Discrepancy` are rejected at the MCP server, so a model cannot inject promoted states | Forward-only state machine: promotion cannot be rolled back, so a mistaken or malicious attestation cannot be undone in place |
+| Fail-closed gate: a corrupted chain or unmet required state exits non-zero and never fabricates a bundle | |
+| Fail-closed TCP token: `PF_MCP_TRANSPORT=tcp` requires `PF_MCP_TOKEN` and defaults to loopback | |
