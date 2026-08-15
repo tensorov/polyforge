@@ -318,6 +318,63 @@ mod tests {
         lookup(name).expect("tool on allowlist")
     }
 
+    /// Create a throwaway git repo in a fresh temp dir and run `f` with that
+    /// dir as the process CWD, restoring the original CWD afterwards.
+    ///
+    /// Needed because `current_git_state` resolves the repo from the ambient
+    /// CWD, and cargo-mutants runs tests from a non-git temp copy of the tree
+    /// (so `git_repo_present` would be false without an explicit repo).
+    fn with_git_repo_cwd<T>(f: impl FnOnce() -> T) -> T {
+        let dir = std::env::temp_dir().join(format!(
+            "pf-todo6-git-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "git init must succeed in test temp dir");
+        // A commit is required so `git rev-parse HEAD` returns a real sha.
+        std::fs::write(dir.join("marker.txt"), "pf").unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["add", "marker.txt"])
+            .current_dir(&dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok);
+        let ok = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.email=pf@test",
+                "-c",
+                "user.name=pf",
+                "commit",
+                "-q",
+                "-m",
+                "seed",
+            ])
+            .current_dir(&dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "git commit must succeed in test temp dir");
+
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        std::env::set_current_dir(&prev).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        match result {
+            Ok(v) => v,
+            Err(p) => std::panic::resume_unwind(p),
+        }
+    }
+
     // Run truncate on a worker thread so a non-terminating mutant (the
     // `-=` -> `/=` division mutation) fails the test instead of hanging it.
     fn truncate_bounded(s: &str, limit: usize) -> String {
@@ -722,8 +779,12 @@ mod tests {
         let mut ledger = Ledger::new(&path);
         let claim_id = append_claim(&mut ledger, "T6"); // commit "abc123"
 
-        let verified =
-            verify_and_append(&mut ledger, "T6", claim_id, &tool("cargo --version"), &[]).unwrap();
+        // Run inside a real (throwaway) git repo so the assertion does not
+        // depend on the ambient CWD being a git repo (cargo-mutants runs
+        // tests from a non-git temp copy of the tree).
+        let verified = with_git_repo_cwd(|| {
+            verify_and_append(&mut ledger, "T6", claim_id, &tool("cargo --version"), &[]).unwrap()
+        });
         let returned = verified.git_state.as_ref().unwrap();
         assert!(returned.git_repo_present);
         assert_eq!(returned.actual_commit_sha.len(), 40);
