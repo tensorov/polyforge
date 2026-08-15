@@ -65,6 +65,25 @@ pub enum EvidenceState {
     Refuted,
 }
 
+/// Actual git state captured at attestation time. Lives in the attestation
+/// payload only — the ledger entry key stays the claim's commit/diff (see
+/// [`EvidenceEntry::to_ledger_entry`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitState {
+    /// `git rev-parse HEAD` at attestation time; `"none"` when not a repo.
+    pub actual_commit_sha: String,
+    /// `git rev-parse HEAD^{tree}` at attestation time.
+    pub actual_tree_hash: String,
+    /// SHA-256 of `git diff HEAD` output at attestation time.
+    pub actual_diff_hash: String,
+    /// `git status --porcelain` was non-empty (uncommitted changes).
+    pub git_dirty: bool,
+    /// A git repo was found (not-a-repo is distinct from dirty).
+    pub git_repo_present: bool,
+    /// The claim's commit/diff differs from the actual git state.
+    pub claim_git_mismatch: bool,
+}
+
 /// A single tri-state evidence record, pinned to a task and commit.
 ///
 /// The `state` field is set exclusively by the constructors and by [`promote`];
@@ -106,6 +125,9 @@ pub struct EvidenceEntry {
     pub budget: Option<String>,
     /// Optional eval metadata blob (record-only, never enforced).
     pub eval_metadata: Option<serde_json::Value>,
+    /// Actual git state captured at attestation time (attestation payload
+    /// only; the ledger entry key stays the claim's commit/diff).
+    pub git_state: Option<GitState>,
     /// Timestamp datum (supplied by the caller, never injected).
     pub ts: String,
 }
@@ -136,6 +158,7 @@ impl EvidenceEntry {
             run_id: None,
             budget: None,
             eval_metadata: None,
+            git_state: None,
             ts: ts.into(),
         }
     }
@@ -173,6 +196,7 @@ impl EvidenceEntry {
             run_id: None,
             budget: None,
             eval_metadata: None,
+            git_state: None,
             ts: ts.into(),
         }
     }
@@ -205,6 +229,7 @@ impl EvidenceEntry {
             run_id: None,
             budget: None,
             eval_metadata: None,
+            git_state: None,
             ts: ts.into(),
         }
     }
@@ -248,6 +273,7 @@ impl EvidenceEntry {
             run_id,
             budget,
             eval_metadata,
+            git_state: None,
             ts: ts.into(),
         }
     }
@@ -283,6 +309,7 @@ impl EvidenceEntry {
             run_id: None,
             budget: None,
             eval_metadata: None,
+            git_state: None,
             ts: ts.into(),
         }
     }
@@ -297,7 +324,7 @@ impl EvidenceEntry {
             EvidenceKind::Discrepancy => "Discrepancy",
             EvidenceKind::Validation => "Validation",
         };
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "state": match self.state {
                 EvidenceState::ModelClaimed => "ModelClaimed",
                 EvidenceState::Verified => "Verified",
@@ -318,6 +345,14 @@ impl EvidenceEntry {
             "budget": self.budget,
             "eval_metadata": self.eval_metadata,
         });
+        if let Some(gs) = &self.git_state {
+            payload["actual_commit_sha"] = gs.actual_commit_sha.clone().into();
+            payload["actual_tree_hash"] = gs.actual_tree_hash.clone().into();
+            payload["actual_diff_hash"] = gs.actual_diff_hash.clone().into();
+            payload["git_dirty"] = gs.git_dirty.into();
+            payload["git_repo_present"] = gs.git_repo_present.into();
+            payload["claim_git_mismatch"] = gs.claim_git_mismatch.into();
+        }
         LedgerEntry::new(
             kind,
             payload,

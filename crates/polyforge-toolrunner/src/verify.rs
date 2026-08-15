@@ -18,10 +18,12 @@
 //! * The chain is verified before any append (zero partial writes on
 //!   integrity failure).
 
-use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceKind, EvidenceState};
+use std::path::{Path, PathBuf};
+
+use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceKind, EvidenceState, GitState};
 use polyforge_core::ledger::{EntryId, EvidenceEntry as LedgerEntry, Ledger};
 
-use crate::runner::{run, RunnerError, Tool};
+use crate::runner::{run, sha256_hex, RunnerError, Tool};
 
 /// Maximum number of stderr bytes recorded in the ledger for a failed run.
 const STDERR_LEDGER_LIMIT: usize = 2048;
@@ -45,6 +47,83 @@ fn now_ts() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis().to_string())
         .unwrap_or_else(|_| "0".to_string())
+}
+
+/// Find the nearest ancestor directory containing a `.git` entry.
+fn find_git_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .map(PathBuf::from)
+}
+
+/// Run a git command in `root`, returning trimmed stdout on success.
+fn git_output(root: &Path, args: &[&str]) -> Option<String> {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Capture the actual git state of the repo containing `start_path`.
+///
+/// Fails open when no repo is found: `git_repo_present` is false,
+/// `actual_commit_sha` is `"none"`, and `git_dirty` is false.
+fn git_state_from(start_path: &Path) -> GitState {
+    let Some(root) = find_git_root(start_path) else {
+        return GitState {
+            actual_commit_sha: "none".into(),
+            actual_tree_hash: String::new(),
+            actual_diff_hash: String::new(),
+            git_dirty: false,
+            git_repo_present: false,
+            claim_git_mismatch: false,
+        };
+    };
+    let actual_commit_sha = git_output(&root, &["rev-parse", "HEAD"]).unwrap_or_default();
+    let actual_tree_hash = git_output(&root, &["rev-parse", "HEAD^{tree}"]).unwrap_or_default();
+    let diff = git_output(&root, &["diff", "HEAD"]).unwrap_or_default();
+    let actual_diff_hash = sha256_hex(diff.as_bytes());
+    let git_dirty = git_output(&root, &["status", "--porcelain"])
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    GitState {
+        actual_commit_sha,
+        actual_tree_hash,
+        actual_diff_hash,
+        git_dirty,
+        git_repo_present: true,
+        claim_git_mismatch: false,
+    }
+}
+
+/// Git state for the repo being verified: process CWD first, then
+/// `CARGO_MANIFEST_DIR` ancestors as fallback. `claim_git_mismatch` is
+/// computed against the claim being verified.
+fn current_git_state(claim: &EvidenceEntry) -> GitState {
+    let mut gs = std::env::current_dir()
+        .ok()
+        .map(|cwd| git_state_from(&cwd))
+        .filter(|g| g.git_repo_present)
+        .or_else(|| {
+            std::env::var("CARGO_MANIFEST_DIR")
+                .ok()
+                .map(|m| git_state_from(Path::new(&m)))
+        })
+        .unwrap_or_else(|| GitState {
+            actual_commit_sha: "none".into(),
+            actual_tree_hash: String::new(),
+            actual_diff_hash: String::new(),
+            git_dirty: false,
+            git_repo_present: false,
+            claim_git_mismatch: false,
+        });
+    gs.claim_git_mismatch = gs.git_repo_present
+        && (claim.commit_sha != gs.actual_commit_sha || claim.diff_hash != gs.actual_diff_hash);
+    gs
 }
 
 /// Verify a claim by running an allowlisted tool, then append the promoted
@@ -77,8 +156,9 @@ pub fn verify_and_append(
             format!("toolrunner:{}", tool.name),
             now_ts(),
         );
-        let refuted =
+        let mut refuted =
             promote(&claim, &discrepancy).map_err(|e| RunnerError::Promote(format!("{e:?}")))?;
+        refuted.git_state = Some(current_git_state(&claim));
         ledger
             .append(refuted.to_ledger_entry())
             .map_err(|e| RunnerError::Ledger(format!("{e:?}")))?;
@@ -93,8 +173,9 @@ pub fn verify_and_append(
         claim.diff_hash.clone(),
         now_ts(),
     );
-    let verified =
+    let mut verified =
         promote(&claim, &attestation).map_err(|e| RunnerError::Promote(format!("{e:?}")))?;
+    verified.git_state = Some(current_git_state(&claim));
     ledger
         .append(verified.to_ledger_entry())
         .map_err(|e| RunnerError::Ledger(format!("{e:?}")))?;
@@ -184,6 +265,25 @@ fn tri_state_from_ledger(entry: &LedgerEntry) -> Result<EvidenceEntry, RunnerErr
         run_id: entry.payload["run_id"].as_str().map(str::to_string),
         budget: entry.payload["budget"].as_str().map(str::to_string),
         eval_metadata: entry.payload.get("eval_metadata").cloned(),
+        git_state: entry.payload.get("git_repo_present").map(|_| GitState {
+            actual_commit_sha: entry.payload["actual_commit_sha"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            actual_tree_hash: entry.payload["actual_tree_hash"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            actual_diff_hash: entry.payload["actual_diff_hash"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            git_dirty: entry.payload["git_dirty"].as_bool().unwrap_or(false),
+            git_repo_present: entry.payload["git_repo_present"].as_bool().unwrap_or(false),
+            claim_git_mismatch: entry.payload["claim_git_mismatch"]
+                .as_bool()
+                .unwrap_or(false),
+        }),
         ts: entry.ts.clone(),
     })
 }
@@ -541,5 +641,107 @@ mod tests {
         assert_eq!(restored.kind, EvidenceKind::Validation);
         assert_eq!(restored.state, EvidenceState::Validated);
         assert_eq!(restored.validator, "oracle");
+    }
+
+    // T3: git-state introspection. Create a throwaway git repo with one
+    // committed file and return its path.
+    fn temp_git_repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pf-todo3-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t3@test"]);
+        run(&["config", "user.name", "t3"]);
+        std::fs::write(dir.join("a.txt"), "hello").unwrap();
+        run(&["add", "a.txt"]);
+        run(&["commit", "-qm", "init"]);
+        dir
+    }
+
+    fn git_head(dir: &Path) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    // T3: a clean temp repo reports its real HEAD and tree hash, present=true,
+    // dirty=false.
+    #[test]
+    fn test_git_state_from_reports_real_head() {
+        let dir = temp_git_repo("head");
+        let gs = git_state_from(&dir);
+        assert!(gs.git_repo_present);
+        assert_eq!(gs.actual_commit_sha, git_head(&dir));
+        assert_eq!(gs.actual_commit_sha.len(), 40);
+        assert_eq!(gs.actual_tree_hash.len(), 40);
+        assert!(!gs.git_dirty);
+    }
+
+    // T3: an uncommitted change flips the dirty marker.
+    #[test]
+    fn test_git_state_from_marks_dirty_worktree() {
+        let dir = temp_git_repo("dirty");
+        std::fs::write(dir.join("a.txt"), "changed").unwrap();
+        let gs = git_state_from(&dir);
+        assert!(gs.git_repo_present);
+        assert!(gs.git_dirty);
+    }
+
+    // T3: a non-repo directory fails open: present=false, sha="none",
+    // dirty=false (not-a-repo is distinct from dirty).
+    #[test]
+    fn test_git_state_from_non_repo_fails_open() {
+        let dir = std::env::temp_dir().join(format!("pf-todo3-norepo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gs = git_state_from(&dir);
+        assert!(!gs.git_repo_present);
+        assert_eq!(gs.actual_commit_sha, "none");
+        assert!(!gs.git_dirty);
+    }
+
+    // T3 acceptance: a claim pinned to "abc123" verified inside a real git
+    // repo (this workspace) must record the ACTUAL HEAD in the attestation
+    // payload and flag claim_git_mismatch=true, while the ledger entry key
+    // stays the claim's key (promote untouched).
+    #[test]
+    fn test_verify_payload_carries_actual_git_state() {
+        let path = tmp_path("git-att");
+        let mut ledger = Ledger::new(&path);
+        let claim_id = append_claim(&mut ledger, "T6"); // commit "abc123"
+
+        let verified =
+            verify_and_append(&mut ledger, "T6", claim_id, &tool("cargo --version"), &[]).unwrap();
+        let returned = verified.git_state.as_ref().unwrap();
+        assert!(returned.git_repo_present);
+        assert_eq!(returned.actual_commit_sha.len(), 40);
+
+        let entries = ledger.iter_entries().unwrap();
+        let payload = &entries[1].payload;
+        assert_eq!(entries[1].kind, "ToolAttestation");
+        // Actual git state is recorded in the payload.
+        let actual = payload["actual_commit_sha"].as_str().unwrap();
+        assert_eq!(actual.len(), 40, "actual_commit_sha must be a real sha");
+        assert_ne!(actual, "abc123");
+        assert_eq!(payload["git_repo_present"].as_bool(), Some(true));
+        assert_eq!(payload["claim_git_mismatch"].as_bool(), Some(true));
+        // The ledger entry key stays the claim's key (promote unchanged).
+        assert_eq!(payload["commit_sha"], "abc123");
+        // Round-trip through tri_state_from_ledger restores the git state.
+        let restored = tri_state_from_ledger(&entries[1]).unwrap();
+        assert!(restored.git_state.is_some());
+        assert_eq!(restored.git_state.unwrap().actual_commit_sha, actual);
     }
 }
