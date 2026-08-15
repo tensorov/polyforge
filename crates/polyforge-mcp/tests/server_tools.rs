@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use polyforge_core::ledger::Ledger;
-use polyforge_mcp::server::PolyForgeServer;
+use polyforge_mcp::server::{PolyForgeServer, TokenGatedServer};
 use rmcp::{
     model::*,
-    service::{serve_directly, RoleClient, RoleServer, RunningService},
+    service::{serve_client, serve_directly, RoleClient, RoleServer, RunningService},
     ClientHandler,
 };
 use serde_json::json;
@@ -385,4 +385,250 @@ async fn test_new_kinds_still_rejected_via_mcp() -> anyhow::Result<()> {
         Ok(())
     })
     .await
+}
+
+/// Like `with_pair`, but wraps the server in `TokenGatedServer` with `token`.
+async fn with_gated_pair<F, Fut>(token: Option<String>, body: F) -> anyhow::Result<()>
+where
+    F: FnOnce(RunningService<RoleClient, TestClient>, PathBuf) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let ledger = temp_ledger();
+    let server = PolyForgeServer::new(&ledger).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let server = TokenGatedServer::new(server, token);
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let (server_transport, client_transport) = tokio::io::duplex(8192);
+            let server_peer_info = client_info();
+            let client_peer_info = server_info();
+            let server_task = tokio::task::spawn_local(async move {
+                let running = serve_directly::<RoleServer, _, _, _, _>(
+                    server,
+                    server_transport,
+                    Some(server_peer_info),
+                );
+                running.waiting().await?;
+                anyhow::Ok(())
+            });
+
+            let client = serve_directly::<RoleClient, _, _, _, _>(
+                TestClient,
+                client_transport,
+                Some(client_peer_info.into()),
+            );
+
+            let result = body(client, ledger).await;
+
+            server_task.abort();
+            result
+        })
+        .await
+}
+
+fn append_args(token: Option<&str>) -> serde_json::Value {
+    let mut args = json!({
+        "kind": "ModelClaim",
+        "payload": "{}",
+        "task_id": "task-t5",
+        "commit_sha": "abc123",
+        "diff_hash": "def456",
+    });
+    if let Some(token) = token {
+        args["_pf_token"] = json!(token);
+    }
+    args
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_token_gate_rejects_missing_token() -> anyhow::Result<()> {
+    with_gated_pair(Some("secret".to_string()), |client, _ledger| async move {
+        let result = call_tool(&client, "evidence_append", append_args(None)).await;
+        let err = result.expect_err("missing _pf_token must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("-32001"), "unexpected error: {msg}");
+        assert!(msg.contains("invalid _pf_token"), "unexpected error: {msg}");
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_token_gate_rejects_wrong_token() -> anyhow::Result<()> {
+    with_gated_pair(Some("secret".to_string()), |client, _ledger| async move {
+        let result = call_tool(&client, "evidence_append", append_args(Some("wrong"))).await;
+        let err = result.expect_err("wrong _pf_token must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("-32001"), "unexpected error: {msg}");
+        assert!(msg.contains("invalid _pf_token"), "unexpected error: {msg}");
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_token_gate_accepts_correct_token() -> anyhow::Result<()> {
+    with_gated_pair(Some("secret".to_string()), |client, _ledger| async move {
+        let result = call_tool(&client, "evidence_append", append_args(Some("secret"))).await;
+        let result = result.expect("correct _pf_token must be accepted");
+        assert!(!result.content.is_empty(), "expected a tool result");
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_token_gate_leaves_tools_list_open() -> anyhow::Result<()> {
+    with_gated_pair(Some("secret".to_string()), |client, _ledger| async move {
+        let result = client.list_tools(None).await?;
+        assert_eq!(result.tools.len(), 4, "tools/list must stay open");
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_token_gate_off_when_none() -> anyhow::Result<()> {
+    // stdio path: no token configured, calls must pass without _pf_token.
+    with_gated_pair(None, |client, _ledger| async move {
+        let result = call_tool(&client, "evidence_append", append_args(None)).await;
+        result.expect("token-free server must accept calls without _pf_token");
+        Ok(())
+    })
+    .await
+}
+
+/// Retry connecting until the spawned server accepts (it binds asynchronously).
+async fn connect_with_retry(port: u16) -> anyhow::Result<tokio::net::TcpStream> {
+    for _ in 0..100 {
+        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(stream) => return Ok(stream),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    }
+    anyhow::bail!("server did not accept connections on port {port}")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_tcp_fails_closed_without_token() -> anyhow::Result<()> {
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_polyforge-mcp"))
+        .env("PF_MCP_TRANSPORT", "tcp")
+        .env("PF_MCP_ADDR", "127.0.0.1:0")
+        .env_remove("PF_MCP_TOKEN")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let output = child.wait_with_output().await?;
+    assert!(
+        !output.status.success(),
+        "tcp without token must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("PF_MCP_TOKEN"), "stderr: {stderr}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_tcp_refuses_non_loopback_bind() -> anyhow::Result<()> {
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_polyforge-mcp"))
+        .env("PF_MCP_TRANSPORT", "tcp")
+        .env("PF_MCP_ADDR", "0.0.0.0:18888")
+        .env("PF_MCP_TOKEN", "test-token")
+        .env_remove("PF_MCP_ALLOW_NON_LOOPBACK")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let output = child.wait_with_output().await?;
+    assert!(
+        !output.status.success(),
+        "non-loopback bind without override must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("non-loopback"), "stderr: {stderr}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_tcp_roundtrip_with_token() -> anyhow::Result<()> {
+    let ledger = temp_ledger();
+    let (stream, child) = loop {
+        // Find a free port, then hand it to the spawned server. The probe is
+        // dropped before the child binds, so a parallel test could steal the
+        // port; retry the whole spawn on a fresh port if the child exits
+        // before accepting a connection.
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = probe.local_addr()?.port();
+        drop(probe);
+
+        let mut candidate = tokio::process::Command::new(env!("CARGO_BIN_EXE_polyforge-mcp"))
+            .env("PF_MCP_TRANSPORT", "tcp")
+            .env("PF_MCP_ADDR", format!("127.0.0.1:{port}"))
+            .env("PF_MCP_TOKEN", "test-token")
+            .env("PF_MCP_LEDGER", &ledger)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+
+        match connect_with_retry(port).await {
+            Ok(stream) => break (stream, Some(candidate)),
+            Err(_) => {
+                let _ = candidate.kill().await;
+                let _ = candidate.wait().await;
+            }
+        }
+    };
+    let client = serve_client::<_, _, _, _>(TestClient, stream).await?;
+
+    // tools/list stays open without a token.
+    let tools = client.list_tools(None).await?;
+    assert_eq!(tools.tools.len(), 4, "tools/list must stay open over TCP");
+
+    // Missing token is rejected with -32001.
+    let err = call_tool(&client, "evidence_append", append_args(None))
+        .await
+        .expect_err("missing _pf_token must be rejected over TCP");
+    let msg = format!("{err}");
+    assert!(msg.contains("-32001"), "unexpected error: {msg}");
+    assert!(msg.contains("invalid _pf_token"), "unexpected error: {msg}");
+
+    // Wrong token is rejected with -32001.
+    let err = call_tool(&client, "evidence_append", append_args(Some("wrong")))
+        .await
+        .expect_err("wrong _pf_token must be rejected over TCP");
+    let msg = format!("{err}");
+    assert!(msg.contains("-32001"), "unexpected error: {msg}");
+    assert!(msg.contains("invalid _pf_token"), "unexpected error: {msg}");
+
+    // Correct token is accepted.
+    let result = call_tool(&client, "evidence_append", append_args(Some("test-token"))).await;
+    result.expect("correct _pf_token must be accepted over TCP");
+
+    if let Some(mut child) = child {
+        child.kill().await?;
+        child.wait().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_stdio_roundtrip_without_token() -> anyhow::Result<()> {
+    let ledger = temp_ledger();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_polyforge-mcp"))
+        .env("PF_MCP_TRANSPORT", "stdio")
+        .env("PF_MCP_LEDGER", &ledger)
+        .env_remove("PF_MCP_TOKEN")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let client = serve_client::<_, _, _, _>(TestClient, (stdout, stdin)).await?;
+
+    // stdio stays token-free: a call without _pf_token succeeds.
+    let result = call_tool(&client, "evidence_append", append_args(None)).await;
+    result.expect("stdio must accept calls without _pf_token");
+
+    child.kill().await?;
+    child.wait().await?;
+    Ok(())
 }

@@ -12,8 +12,13 @@ use polyforge_core::ledger::{EvidenceEntry as LedgerEntry, Ledger, LedgerError};
 use polyforge_toolrunner::runner::lookup;
 use polyforge_toolrunner::verify::verify_and_append;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::ErrorData;
+use rmcp::handler::server::ServerHandler;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, ErrorCode, ErrorData, ListToolsResult,
+    PaginatedRequestParams, ServerInfo, Tool,
+};
 use rmcp::schemars::JsonSchema;
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_router, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,6 +41,61 @@ impl PolyForgeServer {
             }
         }
         Ok(Self { ledger_path: path })
+    }
+}
+
+/// Token-gated wrapper around [`PolyForgeServer`].
+///
+/// When a token is set, every `tools/call` must carry `arguments._pf_token`
+/// equal to the expected value; otherwise the server answers with MCP error
+/// `-32001` (server error range `-32000..-32099`). `tools/list`, `ping` and
+/// the rest of the protocol stay open: they leak nothing.
+#[derive(Debug, Clone)]
+pub struct TokenGatedServer {
+    inner: PolyForgeServer,
+    token: Option<String>,
+}
+
+impl TokenGatedServer {
+    /// Wrap `inner`; `token` gates `tools/call` when `Some`.
+    pub fn new(inner: PolyForgeServer, token: Option<String>) -> Self {
+        Self { inner, token }
+    }
+}
+
+impl ServerHandler for TokenGatedServer {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        if let Some(expected) = &self.token {
+            let provided = request
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("_pf_token"))
+                .and_then(|value| value.as_str());
+            if provided != Some(expected.as_str()) {
+                return Err(ErrorData::new(ErrorCode(-32001), "invalid _pf_token", None));
+            }
+        }
+        self.inner.call_tool(request, context).await
+    }
+
+    async fn list_tools(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        self.inner.list_tools(request, context).await
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.inner.get_tool(name)
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        self.inner.get_info()
     }
 }
 
