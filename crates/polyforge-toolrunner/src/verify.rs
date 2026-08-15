@@ -293,11 +293,17 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
     use std::time::Duration;
 
     use crate::runner::lookup;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    // with_git_repo_cwd mutates the process-global CWD, so concurrent users
+    // race: one test can capture `prev` as another test's temp repo and then
+    // fail to restore it after that repo is deleted. Serialize all callers.
+    static GIT_CWD_LOCK: Mutex<()> = Mutex::new(());
 
     fn tmp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("pf-todo6-tests");
@@ -325,6 +331,7 @@ mod tests {
     /// CWD, and cargo-mutants runs tests from a non-git temp copy of the tree
     /// (so `git_repo_present` would be false without an explicit repo).
     fn with_git_repo_cwd<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = GIT_CWD_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!(
             "pf-todo6-git-{}-{}",
             std::process::id(),
@@ -804,5 +811,56 @@ mod tests {
         let restored = tri_state_from_ledger(&entries[1]).unwrap();
         assert!(restored.git_state.is_some());
         assert_eq!(restored.git_state.unwrap().actual_commit_sha, actual);
+    }
+
+    // F2 mutant guards for current_git_state's claim_git_mismatch boolean:
+    //   verify.rs:125 `&&` -> `||`, `!=` -> `==` (commit), `!=` -> `==` (diff).
+    // Probe the real repo's actual commit/diff, then assert each combination
+    // of the claim's pinned key against it.
+    #[test]
+    fn test_claim_git_mismatch_boolean_combos() {
+        with_git_repo_cwd(|| {
+            // The actual commit/diff the repo reports for a probe claim.
+            let probe = current_git_state(&EvidenceEntry::new_claim("T6", "x", "y", "ts-1"));
+            assert!(probe.git_repo_present);
+            let actual_commit = probe.actual_commit_sha.clone();
+            let actual_diff = probe.actual_diff_hash.clone();
+
+            // A claim pinned to the ACTUAL commit+diff must NOT mismatch.
+            let actual = current_git_state(&EvidenceEntry::new_claim(
+                "T6",
+                &actual_commit,
+                &actual_diff,
+                "ts-1",
+            ));
+            assert!(
+                !actual.claim_git_mismatch,
+                "claim pinned to the actual commit+diff must not mismatch"
+            );
+
+            // A claim pinned to a WRONG commit (same diff) MUST mismatch.
+            let wrong_commit = current_git_state(&EvidenceEntry::new_claim(
+                "T6",
+                "deadbeef",
+                &actual_diff,
+                "ts-1",
+            ));
+            assert!(
+                wrong_commit.claim_git_mismatch,
+                "a wrong commit must flag claim_git_mismatch"
+            );
+
+            // A claim pinned to the actual commit but a WRONG diff MUST mismatch.
+            let wrong_diff = current_git_state(&EvidenceEntry::new_claim(
+                "T6",
+                &actual_commit,
+                "diff-xyz",
+                "ts-1",
+            ));
+            assert!(
+                wrong_diff.claim_git_mismatch,
+                "a wrong diff must flag claim_git_mismatch"
+            );
+        });
     }
 }

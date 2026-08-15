@@ -720,4 +720,135 @@ mod tests {
         assert!(eval.passed);
         assert_eq!(eval.counts.verified, 1);
     }
+
+    // F2 mutant guard (gate.rs:208 `==` -> `!=`): LatestClaim resolves its key
+    // from the task's latest ModelClaimed entry. A later claim for a DIFFERENT
+    // task must not be picked up as this task's key.
+    #[test]
+    fn test_gate_latest_claim_ignores_other_tasks_claims() {
+        let path = tmp_path("other-task");
+        let mut ledger = Ledger::new(&path);
+        let c1 = claim("T4");
+        let v1 = promote(&c1, &attestation("T4")).unwrap();
+        ledger.append(c1.to_ledger_entry()).unwrap();
+        ledger.append(v1.to_ledger_entry()).unwrap();
+        // A later claim for a different task: with the `==`->`!=` mutant the
+        // LatestClaim key resolves to OTHER's key, whose chain has no Verified.
+        let other = TriState::new_claim("OTHER", "zzz", "zzz", "ts-9");
+        ledger.append(other.to_ledger_entry()).unwrap();
+
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::LatestClaim,
+        )
+        .unwrap();
+        assert!(eval.passed, "T4's own chain must pass LatestClaim");
+        assert_eq!(eval.counts.verified, 1);
+    }
+
+    // F2 mutant guard (gate.rs:229 `||` -> `&&`): the Keyed filter must exclude
+    // an entry when EITHER the commit or the diff differs. With the mutant, a
+    // partial key match (one field equal) would be counted.
+    #[test]
+    fn test_gate_keyed_scope_partial_key_mismatch() {
+        let path = tmp_path("keyed-partial");
+        let mut ledger = Ledger::new(&path);
+        let c1 = claim("T4"); // key (abc123, diff-1)
+        let v1 = promote(&c1, &attestation("T4")).unwrap();
+        ledger.append(c1.to_ledger_entry()).unwrap();
+        ledger.append(v1.to_ledger_entry()).unwrap();
+
+        // Same commit, different diff: real filter excludes (TaskNotFound);
+        // the `||`->`&&` mutant counts the claim and returns Ok.
+        let err = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::Keyed {
+                commit_sha: "abc123".to_string(),
+                diff_hash: "diff-2".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, GateError::TaskNotFound { .. }));
+
+        // Different commit, same diff: real filter excludes (TaskNotFound).
+        let err = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::Keyed {
+                commit_sha: "def456".to_string(),
+                diff_hash: "diff-1".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, GateError::TaskNotFound { .. }));
+    }
+
+    // F2 mutant guard (gate.rs:258 `&&` -> `||`): the LatestClaim stale-pass
+    // filter must require BOTH the commit and the diff to match the key. With
+    // the mutant, a Verified on a partial key match is treated as the chain's
+    // last Verified, so a newer claim on the full key is not flagged stale.
+    #[test]
+    fn test_gate_latest_claim_stale_filter_requires_full_key_match() {
+        let path = tmp_path("stale-full-key");
+        let mut ledger = Ledger::new(&path);
+        // claim (abc123, diff-1) + Verified (abc123, diff-1).
+        let c1 = claim("T4");
+        let v1 = promote(&c1, &attestation("T4")).unwrap();
+        ledger.append(c1.to_ledger_entry()).unwrap();
+        ledger.append(v1.to_ledger_entry()).unwrap();
+        // A newer claim on the SAME key (abc123, diff-1).
+        let c_mid = TriState::new_claim("T4", "abc123", "diff-1", "ts-5");
+        ledger.append(c_mid.to_ledger_entry()).unwrap();
+        // A Verified on a PARTIAL key match (abc123, diff-2): real filter
+        // ignores it (diff differs), so the chain's last Verified is v1 and
+        // c_mid (seq higher) makes the verdict stale -> fail. With the
+        // `&&`->`||` mutant this partial Verified is treated as last_vv, and
+        // no claim after it exists -> not stale -> pass.
+        let v_partial = TriState::tool_attestation(
+            "T4",
+            "abc123",
+            "diff-2",
+            "cargo-1.95.0",
+            "env-x",
+            "cargo test",
+            0,
+            "h1",
+            "ts-7",
+        );
+        ledger.append(v_partial.to_ledger_entry()).unwrap();
+
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::LatestClaim,
+        )
+        .unwrap();
+        assert!(!eval.passed, "a stale Verified must not pass LatestClaim");
+        assert_eq!(eval.missing, vec!["Verified"]);
+        assert_eq!(eval.counts.verified, 1);
+    }
+
+    // F2 boundary guard (gate.rs:272 `>` -> `>=`): a claim whose seq equals the
+    // last Verified's seq must NOT be treated as newer (stale). Ledger seqs are
+    // unique, so this is an equivalent mutant, but the boundary is asserted.
+    #[test]
+    fn test_gate_latest_claim_no_newer_claim_is_not_stale() {
+        let ledger = ledger_with("T4", false);
+        let eval = evaluate_complete_scoped(
+            &ledger,
+            "T4",
+            &[EvidenceState::Verified],
+            GateScope::LatestClaim,
+        )
+        .unwrap();
+        assert!(eval.passed, "no newer claim means the verdict is not stale");
+        assert!(eval.missing.is_empty());
+        assert_eq!(eval.counts.verified, 1);
+    }
 }
