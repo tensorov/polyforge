@@ -17,7 +17,7 @@ record claims, allowlisted tools attest them, and operators gate on the resultin
 
 ## Proof
 
-Everything in this README is covered by the workspace test suite (66 tests across the four
+Everything in this README is covered by the workspace test suite (170 tests across the four
 crates) and by the CLI/MCP smoke and end-to-end harnesses.
 
 Run it yourself: `cargo build --workspace && cargo test --workspace` (see [Build from source](#build-from-source)).
@@ -32,12 +32,12 @@ Workspace of four crates (edition 2021, rust-version 1.85, Rust toolchain 1.95.0
 
 | Crate                   | Crates.io                                                                                        | Responsibility                                                                                   |
 | ----------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `polyforge-core`        | [![crates.io](https://img.shields.io/badge/crates.io-0.1.0-blue)](https://crates.io/crates/polyforge-core) | Evidence model: tri-state entries, promotion rules, the append-only Merkle ledger, and deterministic gate evaluation. |
-| `polyforge-toolrunner`  | [![crates.io](https://img.shields.io/badge/crates.io-0.1.0-blue)](https://crates.io/crates/polyforge-toolrunner) | Allowlisted tool runner: only allowlisted binaries (cargo/rustc/gcc), typed arguments, no shell, per-command environment fingerprint (Nix store-path digest + devbox.lock sha256 folded in when present, Cargo.lock sha256 always). |
-| `polyforge-mcp`         | [![crates.io](https://img.shields.io/badge/crates.io-0.1.0-blue)](https://crates.io/crates/polyforge-mcp) | Model Context Protocol server (rmcp): the interface models use to append claims and query gates. |
-| `polyforge-cli`         | [![crates.io](https://img.shields.io/badge/crates.io-0.1.0-blue)](https://crates.io/crates/polyforge-cli) | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.           |
+| `polyforge-core`        | [![crates.io](https://img.shields.io/badge/crates.io-0.2.0-blue)](https://crates.io/crates/polyforge-core) | Evidence model: tri-state entries, promotion rules, the append-only Merkle ledger, and deterministic gate evaluation. |
+| `polyforge-toolrunner`  | [![crates.io](https://img.shields.io/badge/crates.io-0.2.0-blue)](https://crates.io/crates/polyforge-toolrunner) | Allowlisted tool runner: only allowlisted binaries (cargo/rustc/gcc), typed arguments, no shell, per-command environment fingerprint (Nix store-path digest + devbox.lock sha256 folded in when present, Cargo.lock sha256 always, plus the values of key build env vars such as CFLAGS/CXXFLAGS/LDFLAGS/RUSTDOCFLAGS when set). |
+| `polyforge-mcp`         | [![crates.io](https://img.shields.io/badge/crates.io-0.2.0-blue)](https://crates.io/crates/polyforge-mcp) | Model Context Protocol server (rmcp): the interface models use to append claims and query gates. |
+| `polyforge-cli`         | [![crates.io](https://img.shields.io/badge/crates.io-0.2.0-blue)](https://crates.io/crates/polyforge-cli) | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.           |
 
-All four crates are published to [crates.io](https://crates.io): `v0.1.0` of
+All four crates are published to [crates.io](https://crates.io): `v0.2.0` of
 `polyforge-core`, `polyforge-toolrunner`, `polyforge-mcp`, and `polyforge-cli` (install the
 binaries with `cargo install polyforge-cli polyforge-mcp`).
 
@@ -62,6 +62,11 @@ Evidence is tri-state and only ever moves forward:
 
 A gate can require `verified` or `validated` (see below). `Refuted` entries are recorded
 but never satisfy a gate in this milestone.
+
+Tool attestations carry a wall-clock timestamp (`ts`) captured at run time, and the
+toolrunner's payload is git-aware: when a verifier runs inside a git checkout, the
+recorded payload reflects the repository state (commit and diff) rather than a bare
+command string.
 
 ## Models can never self-produce `Verified`
 
@@ -126,10 +131,23 @@ What each step does:
 
 The `--required` flag takes a comma-list such as `verified,validated`.
 
+Additional CLI subcommands:
+
+- `ledger summary` - print per-task state counts as one grep-able line
+  (`tasks_verified=… tasks_validated=… tasks_failed=…`), classifying each task by its
+  latest ledger entry.
+- `coverage-check --report <llvm-cov.json>` - evaluate a `cargo llvm-cov --json` report
+  against the coverage floor (default 80% aggregate / 80% per file).
+- `append` accepts optional identity flags on any kind: `--experiment <id>`,
+  `--model <fp>`, `--run <id>`, `--budget <amt>`, and `--metadata <json>`. These are
+  record-only (never enforced) and are carried through promotion.
+
 Environment variables:
 
 - `PF_LEDGER` — ledger path (default `.pf/ledger.jsonl`).
 - `PF_EVIDENCE_DIR` — directory for gate bundles and manifests (default `.pf/evidence/`).
+- `PF_ENV_FINGERPRINT` - operator-supplied environment fingerprint recorded on
+  attestations (default `cli`).
 
 ## CI integration / GitHub Actions
 
@@ -176,6 +194,11 @@ polyforge-cli gate <task_id> --required verified,validated
 - `polyforge-cli gate` is reproducible: a second PASS run produces a byte-identical bundle
   and an identical `bundle_sha256`.
 
+The gate evaluates against a scope. By default it uses the task's latest claim
+(`LatestClaim`); passing both `--commit <sha>` and `--diff <hash>` pins the gate to a
+specific claim (`Keyed`). A keyed gate that does not match the task's latest claim is
+rejected as stale rather than silently passing against an older claim.
+
 ## Connecting the MCP army
 
 `polyforge-mcp` is an rmcp server speaking MCP over stdio by default:
@@ -188,7 +211,10 @@ Transport configuration:
 
 - `PF_MCP_TRANSPORT=stdio` (default) — MCP over standard input/output.
 - `PF_MCP_TRANSPORT=tcp` — MCP over TCP; bind address via `PF_MCP_ADDR`
-  (default `127.0.0.1:18888`).
+  (default `127.0.0.1:18888`). The TCP listener is loopback-only: a non-loopback
+  bind address is rejected at startup. When TCP is enabled, `PF_MCP_TOKEN` is
+  required and every request must carry it as `_pf_token`; a missing or invalid
+  token is rejected with JSON-RPC error `-32001`.
 - `PF_MCP_LEDGER` — ledger path (default `.pf/ledger.jsonl`).
 
 Four tools:
@@ -286,6 +312,11 @@ Failed integrity checks never fabricate a bundle or manifest — the failure is 
 nothing is written. This is exercised end-to-end by the army harness (byte-flip in the
 tail entry → gate exits non-zero with `ledger integrity broken at seq …`, no bundle, no
 manifest).
+
+The chain is hardened against reordering and concurrent writers: entries use a
+length-prefixed canonical encoding (hash version 2), and a committed anchor sidecar
+records the chain tail so a rewind past the anchor is detected. Writers take an exclusive
+file lock (`fs2`) around each append, so concurrent processes cannot interleave entries.
 
 Tamper evidence holds within a trusted checkout: the chain proves the ledger was not
 rewritten, not that the checkout itself is authentic. Cryptographic external anchoring is
