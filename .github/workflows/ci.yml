@@ -68,6 +68,8 @@ jobs:
   mutations:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    env:
+      MUTANT_PACKAGES: "polyforge-core polyforge-toolrunner polyforge-mcp polyforge-cli"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,7 +104,7 @@ jobs:
             echo "test files changed; running un-scoped full-crate suite" >&2
             echo "RUN_SCOPE=full" >> "$GITHUB_ENV"
           else
-            MUTANTS=$(cargo mutants --list --json --in-diff git.diff -p polyforge-core -p polyforge-toolrunner 2>/dev/null | python3 -c 'import json,sys; d=sys.stdin.read().strip(); print(len(json.loads(d)) if d else 0)')
+            MUTANTS=$(cargo mutants --list --json --in-diff git.diff $(for p in $MUTANT_PACKAGES; do printf -- '-p %s ' "$p"; done) 2>/dev/null | python3 -c 'import json,sys; d=sys.stdin.read().strip(); print(len(json.loads(d)) if d else 0)')
             if [ "$MUTANTS" -eq 0 ]; then
               echo "no mutants in diff scope; skipping mutations job" >&2
               echo "RUN_SCOPE=skip" >> "$GITHUB_ENV"
@@ -114,11 +116,11 @@ jobs:
 
       - name: Run mutations (in-diff)
         if: env.RUN_SCOPE == 'in-diff'
-        run: cargo mutants --no-shuffle -vV --in-diff git.diff -p polyforge-core -p polyforge-toolrunner --timeout=500 --build-timeout=500
+        run: cargo mutants --no-shuffle -vV --in-diff git.diff $(for p in $MUTANT_PACKAGES; do printf -- '-p %s ' "$p"; done) --timeout=500 --build-timeout=500
 
       - name: Run mutations (full, test files changed)
         if: env.RUN_SCOPE == 'full'
-        run: cargo mutants --no-shuffle -vV -p polyforge-core -p polyforge-toolrunner --timeout=500 --build-timeout=500
+        run: cargo mutants --no-shuffle -vV $(for p in $MUTANT_PACKAGES; do printf -- '-p %s ' "$p"; done) --timeout=500 --build-timeout=500
 
       - name: Skip mutations (no mutants in scope)
         if: env.RUN_SCOPE == 'skip'

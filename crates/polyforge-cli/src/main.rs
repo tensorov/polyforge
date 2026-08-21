@@ -236,7 +236,6 @@ fn latest_state_of_state(
             // Reconstruct a tri-state entry from the ledger record so we can
             // promote it. The ledger payload carries the structured fields.
             let state = match le.payload.get("state").and_then(|v| v.as_str()) {
-                Some("ModelClaimed") => EvidenceState::ModelClaimed,
                 Some("Verified") => EvidenceState::Verified,
                 Some("Validated") => EvidenceState::Validated,
                 _ => EvidenceState::ModelClaimed,
