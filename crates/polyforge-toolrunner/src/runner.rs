@@ -460,26 +460,46 @@ const ENV_FINGERPRINT_ALLOWLIST: &[&str] = &[
 /// PATH, with a fixed-order self-describing tail that folds in Nix/Devbox
 /// identity and lockfile hashes when present:
 ///
-/// `<base-hex>|nix=<none|digest>|devbox=<none|sha256>|cargo.lock=<sha256>`
+/// `<base-hex>|nix=<none|digest>|devbox=<none|sha256>|cargo.lock=<sha256>|uv.lock=<sha256>|pnpm-lock.yaml=<sha256>|package-lock.json=<sha256>|yarn.lock=<sha256>`
 ///
 /// `base-hex` is the pre-C2.1 formula unchanged (SHA-256 over tool version +
 /// os + arch + sorted env var names + PATH). The tail is appended verbatim in
-/// fixed order; the `cargo.lock` section is unconditional. Changes when the
-/// tool version, PATH, Nix store paths, `devbox.lock`, or the repo-root
-/// `Cargo.lock` change; byte-stable across identical runs.
+/// fixed order; every section is unconditional. Each lockfile name resolves
+/// against candidate roots up-tree from the base directory (see
+/// `candidate_roots`) and contributes the SHA-256 of the first match, or
+/// literal `none` when no candidate contains the file. Changes when the tool
+/// version, PATH, Nix store paths, or any tracked lockfile changes;
+/// byte-stable across identical runs.
 pub fn env_fingerprint(tool_version: &str) -> String {
+    let base = std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::current_dir())
+        .unwrap_or_default();
+    env_fingerprint_at(tool_version, &base)
+}
+
+/// Environment-facing builder rooted at an explicit base directory: names,
+/// PATH, and Nix segments come from the real process environment while
+/// lockfiles are discovered by scanning [`candidate_roots`] built from
+/// `base_dir`. Production callers go through [`env_fingerprint`] (base =
+/// CARGO_MANIFEST_DIR, falling back to the current directory); tests pass a
+/// synthetic root.
+fn env_fingerprint_at(tool_version: &str, base_dir: &Path) -> String {
     let names: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
     let path = std::env::var("PATH").unwrap_or_default();
     let nix_segments = nix_segments_from_path(&path);
-    let root = repo_root();
-    // Both lockfiles are read relative to the repo root (walked up from
-    // CARGO_MANIFEST_DIR); a missing/unreadable file contributes `none`.
-    let devbox_bytes = root
-        .as_deref()
-        .and_then(|dir| std::fs::read(dir.join("devbox.lock")).ok());
-    let cargo_lock_bytes = root
-        .as_deref()
-        .and_then(|dir| std::fs::read(dir.join("Cargo.lock")).ok());
+    let roots = candidate_roots(base_dir);
+    let read_first = |name: &str| {
+        roots
+            .iter()
+            .find_map(|dir| std::fs::read(dir.join(name)).ok())
+    };
+    let devbox_bytes = read_first("devbox.lock");
+    let cargo_lock_bytes = read_first("Cargo.lock");
+    let uv_lock_bytes = read_first("uv.lock");
+    let pnpm_lock_bytes = read_first("pnpm-lock.yaml");
+    let package_lock_bytes = read_first("package-lock.json");
+    let yarn_lock_bytes = read_first("yarn.lock");
     let allowlist: Vec<(&str, String)> = ENV_FINGERPRINT_ALLOWLIST
         .iter()
         .filter_map(|name| std::env::var(name).ok().map(|value| (*name, value)))
@@ -488,15 +508,34 @@ pub fn env_fingerprint(tool_version: &str) -> String {
         .iter()
         .map(|(name, value)| (*name, value.as_str()))
         .collect();
+    let locks = LockfileBytes {
+        devbox: devbox_bytes.as_deref(),
+        cargo_lock: cargo_lock_bytes.as_deref(),
+        uv_lock: uv_lock_bytes.as_deref(),
+        pnpm_lock: pnpm_lock_bytes.as_deref(),
+        package_lock: package_lock_bytes.as_deref(),
+        yarn_lock: yarn_lock_bytes.as_deref(),
+    };
     env_fingerprint_from_pairs(
         tool_version,
         &names,
         &path,
         &nix_segments,
-        devbox_bytes.as_deref(),
-        cargo_lock_bytes.as_deref(),
+        &locks,
         &allowlist_refs,
     )
+}
+
+/// Contents of the six environment lockfiles folded into the fingerprint
+/// tail, held in fixed tail order. `None` means no candidate root contained
+/// the file (or it was unreadable) and renders as literal `none`.
+struct LockfileBytes<'a> {
+    devbox: Option<&'a [u8]>,
+    cargo_lock: Option<&'a [u8]>,
+    uv_lock: Option<&'a [u8]>,
+    pnpm_lock: Option<&'a [u8]>,
+    package_lock: Option<&'a [u8]>,
+    yarn_lock: Option<&'a [u8]>,
 }
 
 /// Pure core of [`env_fingerprint`]: identical inputs produce byte-identical
@@ -510,8 +549,7 @@ fn env_fingerprint_from_pairs(
     env_names: &[String],
     path: &str,
     nix_segments: &[String],
-    devbox_bytes: Option<&[u8]>,
-    cargo_lock_bytes: Option<&[u8]>,
+    locks: &LockfileBytes<'_>,
     allowlist_pairs: &[(&str, &str)],
 ) -> String {
     let mut names = env_names.to_vec();
@@ -535,10 +573,14 @@ fn env_fingerprint_from_pairs(
     }
     let base = hex(&h.finalize());
     format!(
-        "{base}|nix={}|devbox={}|cargo.lock={}",
+        "{base}|nix={}|devbox={}|cargo.lock={}|uv.lock={}|pnpm-lock.yaml={}|package-lock.json={}|yarn.lock={}",
         nix_digest(nix_segments),
-        lock_section(devbox_bytes),
-        lock_section(cargo_lock_bytes),
+        lock_section(locks.devbox),
+        lock_section(locks.cargo_lock),
+        lock_section(locks.uv_lock),
+        lock_section(locks.pnpm_lock),
+        lock_section(locks.package_lock),
+        lock_section(locks.yarn_lock),
     )
 }
 
@@ -589,31 +631,23 @@ fn lock_section(bytes: Option<&[u8]>) -> String {
     }
 }
 
-/// Locate the workspace root: walk up from `CARGO_MANIFEST_DIR` (falling back
-/// to the current directory) to the nearest ancestor whose `Cargo.toml` carries
-/// a `[workspace]` section. Both lockfiles are read relative to it.
-/// `CARGO_MANIFEST_DIR` is preferred over the process cwd because it is stable
-/// regardless of where the caller invokes the runner.
-fn repo_root() -> Option<PathBuf> {
-    let start = std::env::var("CARGO_MANIFEST_DIR")
-        .map(PathBuf::from)
-        .ok()
-        .or_else(|| std::env::current_dir().ok())?;
-    repo_root_from(&start)
-}
-
-/// Walk up from `start` to the nearest ancestor whose `Cargo.toml` carries a
-/// `[workspace]` section.
-fn repo_root_from(start: &Path) -> Option<PathBuf> {
-    start
+/// Directories scanned for each environment lockfile, in order: the enclosing
+/// git repository root when one exists (nearest ancestor carrying a `.git`
+/// entry), then `base` itself and every ancestor directory walking upward.
+/// Per lockfile name the first candidate containing the file wins; later
+/// candidates never override an earlier match. A `[workspace]` Cargo.toml is
+/// not required, so foreign Python/TS repositories resolve their own locks.
+fn candidate_roots(base: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(git_root) = base
         .ancestors()
-        .find(|dir| {
-            let manifest = dir.join("Cargo.toml");
-            std::fs::read_to_string(manifest)
-                .map(|text| text.contains("[workspace]"))
-                .unwrap_or(false)
-        })
+        .find(|dir| dir.join(".git").exists())
         .map(PathBuf::from)
+    {
+        roots.push(git_root);
+    }
+    roots.extend(base.ancestors().map(PathBuf::from));
+    roots
 }
 
 /// Resolve a tool's version by running `<bin> --version`.
@@ -742,6 +776,18 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    /// All-absent lockfile vector for the pure core.
+    fn no_locks() -> LockfileBytes<'static> {
+        LockfileBytes {
+            devbox: None,
+            cargo_lock: None,
+            uv_lock: None,
+            pnpm_lock: None,
+            package_lock: None,
+            yarn_lock: None,
+        }
+    }
+
     /// Synthetic-input helper for the pure core: identical args → identical
     /// fingerprint, with no real environment or filesystem access.
     fn fp(
@@ -756,8 +802,11 @@ mod tests {
             &env_names.into_iter().map(String::from).collect::<Vec<_>>(),
             path,
             nix,
-            devbox,
-            cargo,
+            &LockfileBytes {
+                devbox,
+                cargo_lock: cargo,
+                ..no_locks()
+            },
             &[],
         )
     }
@@ -772,8 +821,7 @@ mod tests {
             &[],
             "/usr/bin",
             &[],
-            None,
-            None,
+            &no_locks(),
             &[("RUSTFLAGS", "-Ctarget-cpu=native")],
         );
         let other = env_fingerprint_from_pairs(
@@ -781,8 +829,7 @@ mod tests {
             &[],
             "/usr/bin",
             &[],
-            None,
-            None,
+            &no_locks(),
             &[("RUSTFLAGS", "-Copt-level=3")],
         );
         assert_ne!(
@@ -794,8 +841,10 @@ mod tests {
     #[test]
     fn test_env_fingerprint_allowlist_values_deterministic() {
         let pairs = &[("RUSTFLAGS", "-Ctarget-cpu=native"), ("CC", "clang")];
-        let a = env_fingerprint_from_pairs("cargo-1.95.0", &[], "/usr/bin", &[], None, None, pairs);
-        let b = env_fingerprint_from_pairs("cargo-1.95.0", &[], "/usr/bin", &[], None, None, pairs);
+        let a =
+            env_fingerprint_from_pairs("cargo-1.95.0", &[], "/usr/bin", &[], &no_locks(), pairs);
+        let b =
+            env_fingerprint_from_pairs("cargo-1.95.0", &[], "/usr/bin", &[], &no_locks(), pairs);
         assert_eq!(a, b, "identical allowlist pairs must hash identically");
     }
 
@@ -858,7 +907,9 @@ mod tests {
         assert_eq!(a, b, "structure is fixed; absent sections must not wobble");
         let cargo_hex = sha256_hex(b"cargo-lock");
         assert!(
-            a.ends_with(&format!("|nix=none|devbox=none|cargo.lock={cargo_hex}")),
+            a.contains(&format!(
+                "|nix=none|devbox=none|cargo.lock={cargo_hex}|uv.lock=none|pnpm-lock.yaml=none|package-lock.json=none|yarn.lock=none"
+            )),
             "expected literal none tokens, got: {a}"
         );
         // base + tail: fingerprint is strictly longer than a bare 64-hex hash.
@@ -970,64 +1021,136 @@ mod tests {
     }
 
     #[test]
-    fn test_repo_root_from_finds_workspace_ancestor() {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let root = repo_root_from(manifest_dir).expect("workspace root found");
-        let text = std::fs::read_to_string(root.join("Cargo.toml"))
-            .expect("workspace Cargo.toml readable");
-        assert!(
-            text.contains("[workspace]"),
-            "root {root:?} must carry a [workspace] section"
-        );
-        assert!(
-            manifest_dir.starts_with(&root),
-            "root {root:?} must be an ancestor of {manifest_dir:?}"
-        );
-    }
-
-    #[test]
-    fn test_repo_root_from_returns_none_without_workspace() {
-        let tmp = std::env::temp_dir().join(format!("pf-noroot-{}", std::process::id()));
+    fn test_candidate_roots_walk_base_and_ancestors() {
+        let tmp = std::env::temp_dir().join(format!("pf-cands-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("sub")).expect("temp subdir created");
-        std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"x\"\n")
-            .expect("temp manifest written");
+        let roots = candidate_roots(&tmp.join("sub"));
         assert_eq!(
-            repo_root_from(&tmp.join("sub")),
-            None,
-            "no [workspace] ancestor must yield None"
+            roots.first(),
+            Some(&tmp.join("sub")),
+            "base dir itself is the first candidate: {roots:?}"
+        );
+        assert!(
+            roots.contains(&tmp),
+            "immediate parent must be a candidate: {roots:?}"
+        );
+        assert_eq!(
+            roots.last(),
+            Some(&PathBuf::from("/")),
+            "walk terminates at the filesystem root: {roots:?}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn test_repo_root_finds_real_workspace() {
-        let root = repo_root().expect("CARGO_MANIFEST_DIR walk-up finds the workspace");
-        let text = std::fs::read_to_string(root.join("Cargo.toml"))
-            .expect("workspace Cargo.toml readable");
-        assert!(
-            text.contains("[workspace]"),
-            "root {root:?} must carry a [workspace] section"
+    fn test_candidate_roots_prepends_git_root() {
+        let tmp = std::env::temp_dir().join(format!("pf-gitroot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".git")).expect(".git marker created");
+        std::fs::create_dir_all(tmp.join("sub")).expect("sub created");
+        let roots = candidate_roots(&tmp.join("sub"));
+        assert_eq!(
+            roots.first(),
+            Some(&tmp),
+            "git repo root is prepended ahead of base: {roots:?}"
         );
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert!(
-            manifest_dir.starts_with(&root),
-            "root {root:?} must be an ancestor of {manifest_dir:?}"
+        assert_eq!(
+            roots.get(1),
+            Some(&tmp.join("sub")),
+            "base dir follows the git root: {roots:?}"
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Negative control: with no lockfile of any kind in the base directory
+    /// or anywhere up-tree, every foreign-lockfile section renders literal
+    /// `none` and nothing is invented.
+    #[test]
+    fn test_env_fingerprint_no_lockfiles_up_tree_renders_none() {
+        let tmp = std::env::temp_dir().join(format!("pf-nolocks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("temp dir created");
+        let fp = env_fingerprint_at("cargo-1.95.0", &tmp);
+        assert_eq!(tail_section(&fp, "uv.lock"), "none");
+        assert_eq!(tail_section(&fp, "pnpm-lock.yaml"), "none");
+        assert_eq!(tail_section(&fp, "package-lock.json"), "none");
+        assert_eq!(tail_section(&fp, "yarn.lock"), "none");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_env_fingerprint_reads_real_workspace_lockfile() {
         let fp = env_fingerprint("cargo-1.95.0");
-        let tail = fp
-            .split("|cargo.lock=")
-            .nth(1)
-            .expect("cargo.lock section present");
+        let tail = tail_section(&fp, "cargo.lock");
         assert_eq!(tail.len(), 64, "real Cargo.lock sha256, not `none`: {fp}");
         assert!(
             tail.bytes().all(|b| b.is_ascii_hexdigit()),
             "hex digest expected: {fp}"
         );
+    }
+
+    /// Extracts one self-describing tail section (`|<key>=<value>`) from a
+    /// fingerprint string.
+    fn tail_section(fp: &str, key: &str) -> String {
+        let marker = format!("|{key}=");
+        let rest = fp.split(&marker).nth(1).expect("tail section present");
+        rest.split('|')
+            .next()
+            .expect("section value present")
+            .to_string()
+    }
+
+    /// Foreign-repository discovery guard: a directory holding ONLY a
+    /// foreign lockfile with no `[workspace]` ancestor anywhere up-tree must
+    /// still fold that lockfile into the fingerprint tail via candidate-root
+    /// scanning (Python/TS repositories without Cargo.toml are first-class).
+    #[test]
+    fn test_env_fingerprint_discovers_uv_lock_in_non_cargo_repo() {
+        let tmp = std::env::temp_dir().join(format!("pf-noncargo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("temp dir created");
+        std::fs::write(tmp.join("uv.lock"), b"uv-lock-v1").expect("uv.lock written");
+        let fp = env_fingerprint_at("cargo-1.95.0", &tmp);
+        assert!(
+            fp.contains(&format!("|uv.lock={}", sha256_hex(b"uv-lock-v1"))),
+            "foreign-repo uv.lock must contribute its sha256: {fp}"
+        );
+        assert_ne!(tail_section(&fp, "uv.lock"), "none");
+        assert_eq!(tail_section(&fp, "devbox"), "none");
+        assert_eq!(tail_section(&fp, "cargo.lock"), "none");
+        assert_eq!(tail_section(&fp, "pnpm-lock.yaml"), "none");
+        assert_eq!(tail_section(&fp, "package-lock.json"), "none");
+        assert_eq!(tail_section(&fp, "yarn.lock"), "none");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Non-Cargo lockfile types ARE folded once a `[workspace]` root exists
+    /// up-tree: uv.lock contributes its SHA-256 while absent siblings stay
+    /// literal `none`.
+    #[test]
+    fn test_env_fingerprint_discovers_uv_lock_under_workspace_root() {
+        let tmp = std::env::temp_dir().join(format!("pf-uvroot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("temp dir created");
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[workspace]\nmembers = []\nresolver = \"2\"\n",
+        )
+        .expect("workspace manifest written");
+        std::fs::write(tmp.join("uv.lock"), b"uv-lock-v1").expect("uv.lock written");
+        let fp = env_fingerprint_at("cargo-1.95.0", &tmp);
+        assert_eq!(
+            tail_section(&fp, "uv.lock"),
+            sha256_hex(b"uv-lock-v1"),
+            "discovered uv.lock must contribute its sha256"
+        );
+        assert_eq!(tail_section(&fp, "devbox"), "none");
+        assert_eq!(tail_section(&fp, "cargo.lock"), "none");
+        assert_eq!(tail_section(&fp, "pnpm-lock.yaml"), "none");
+        assert_eq!(tail_section(&fp, "package-lock.json"), "none");
+        assert_eq!(tail_section(&fp, "yarn.lock"), "none");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
