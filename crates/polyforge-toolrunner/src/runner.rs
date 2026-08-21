@@ -213,9 +213,7 @@ pub fn lookup(name: &str) -> Option<Tool> {
 /// past the name gate.
 pub fn spawn(tool: &Tool, args: &[String]) -> Result<Child, RunnerError> {
     let canonical = lookup(&tool.name).ok_or_else(|| RunnerError::NotAllowed(tool.name.clone()))?;
-    for a in args {
-        validate_arg(&canonical.name, a)?;
-    }
+    validate_tool_args(&canonical.name, args)?;
     let mut cmd = Command::new(&canonical.bin);
     cmd.args(&canonical.args).args(args);
     cmd.stdin(Stdio::null())
@@ -357,12 +355,83 @@ fn kill_process_group(pid: u32) {
 /// escaping: we never pass through a shell, so a space is fine but command
 /// substitution / redirection / backgrounding are not.
 fn validate_arg(tool: &str, arg: &str) -> Result<(), RunnerError> {
-    const META: &[char] = &[';', '|', '&', '`', '$', '>', '<', '\n', '\0'];
+    const META: &[char] = &[';', '|', '&', '`', '$', '>', '<', '\t', '\n', '\0'];
     if arg.chars().any(|c| META.contains(&c)) {
         return Err(RunnerError::InvalidArg {
             tool: tool.to_string(),
             arg: arg.to_string(),
         });
+    }
+    Ok(())
+}
+
+/// Attestation runs must never MUTATE the worktree (--fix/--update/
+/// --apply class) nor load attacker-chosen code paths (--rulesdir,
+/// custom formatters, `-p` plugin imports). Package runners (uv run,
+/// npx, npm exec) stay off the allowlist entirely because their argv
+/// resolves an unbounded binary set.
+fn denied_arg(tool: &str, arg: &str) -> bool {
+    match tool {
+        "ruff check" => matches!(arg, "--fix" | "--unsafe-fixes"),
+        "eslint" => {
+            matches!(
+                arg,
+                "--fix" | "--rulesdir" | "--resolve-plugins-relative-to"
+            )
+        }
+        "biome check" => matches!(arg, "--apply" | "--apply-unsafe" | "--write"),
+        "vitest run" => matches!(arg, "-u" | "--update"),
+        "pytest" => {
+            if arg == "--pdb" {
+                true
+            } else if arg == "-p" {
+                false // value checked by the caller via pair rule below
+            } else {
+                arg.starts_with("-p") && !arg.starts_with("-p no:")
+            }
+        }
+        "gcc -v" => true, // pure version probe: any extra arg denied
+        _ => false,
+    }
+}
+
+/// Full typed-arg policy: metachars per arg, then the per-tool denylist,
+/// then the eslint --format value rule (custom formatter paths are
+/// loadable JS). Slice-level so `--format <value>` can be inspected as a
+/// pair.
+fn validate_tool_args(tool: &str, args: &[String]) -> Result<(), RunnerError> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        validate_arg(tool, a)?;
+        if denied_arg(tool, a) {
+            return Err(RunnerError::InvalidArg {
+                tool: tool.to_string(),
+                arg: a.clone(),
+            });
+        }
+        if tool == "eslint" && a == "--format" {
+            if let Some(v) = args.get(i + 1) {
+                if v.contains('/') || v.ends_with(".js") {
+                    return Err(RunnerError::InvalidArg {
+                        tool: tool.to_string(),
+                        arg: v.clone(),
+                    });
+                }
+            }
+        }
+        if tool == "pytest" && a == "-p" {
+            match args.get(i + 1) {
+                Some(v) if v.starts_with("no:") => {}
+                _ => {
+                    return Err(RunnerError::InvalidArg {
+                        tool: tool.to_string(),
+                        arg: a.clone(),
+                    });
+                }
+            }
+        }
+        i += 1;
     }
     Ok(())
 }
@@ -1199,5 +1268,54 @@ mod tests {
             !v.starts_with("unknown-"),
             "succeeding tool must not use unknown- fallback, got: {v}"
         );
+    }
+
+    // ---- ARG-DENYLIST policy walk ----
+
+    /// Denial matrix: each argv must be rejected with InvalidArg before any
+    /// process is spawned.
+    #[test]
+    fn arg_denylist_rejects_mutating_and_code_loading_args() {
+        let cases: &[(&str, &[&str])] = &[
+            ("ruff check", &["--fix"]),
+            ("ruff check", &["--unsafe-fixes"]),
+            ("eslint", &["--fix"]),
+            ("eslint", &["--rulesdir", "x"]),
+            ("eslint", &["--resolve-plugins-relative-to", "x"]),
+            ("eslint", &["--format", "./evil.js"]),
+            ("eslint", &["--format", "a/b"]),
+            ("biome check", &["--apply"]),
+            ("biome check", &["--write"]),
+            ("vitest run", &["-u"]),
+            ("vitest run", &["--update"]),
+            ("pytest", &["-p", "evil_plugin"]),
+            ("pytest", &["--pdb"]),
+            ("gcc -v", &["anything"]),
+        ];
+        for (name, raw) in cases {
+            let t = tool(name);
+            let args: Vec<String> = raw.iter().map(|s| s.to_string()).collect();
+            let err = spawn(&t, &args).unwrap_err();
+            assert!(
+                matches!(err, RunnerError::InvalidArg { .. }),
+                "{name} {raw:?} must be denied with InvalidArg, got {err:?}"
+            );
+        }
+    }
+
+    /// Positive controls: benign typed args pass the full policy walk.
+    #[test]
+    fn arg_denylist_allows_benign_typed_args() {
+        let pytest_ok = vec!["-p".to_string(), "no:cacheprovider".to_string()];
+        assert!(validate_tool_args("pytest", &pytest_ok).is_ok());
+        let eslint_ok = vec!["--format".to_string(), "json".to_string()];
+        assert!(validate_tool_args("eslint", &eslint_ok).is_ok());
+    }
+
+    /// Tab is a shell word separator and must be rejected like newline/NUL.
+    #[test]
+    fn validate_arg_rejects_tab_metachar() {
+        let err = validate_arg("cargo-mutants", "--foo\tbar").unwrap_err();
+        assert!(matches!(err, RunnerError::InvalidArg { .. }));
     }
 }
