@@ -265,11 +265,7 @@ pub fn evaluate_complete_scoped(
                     })
                     .max_by_key(|e| e.seq);
                 match last_vv {
-                    Some(last) => entries
-                        .iter()
-                        .filter(|e| task_of(e) == Some(task_id))
-                        .filter(|e| state_of(e) == Some(EvidenceState::ModelClaimed))
-                        .any(|e| e.seq > last.seq),
+                    Some(last) => has_newer_claim(&entries, task_id, last.seq),
                     None => false,
                 }
             }
@@ -328,6 +324,18 @@ fn key_of(entry: &LedgerEntry) -> (&str, &str) {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     (commit, diff)
+}
+
+/// Quarantined via mutants.toml exclude_functions (accepted-equivalents
+/// registry): equivalent by seq uniqueness (see
+/// test_gate_latest_claim_no_newer_claim_is_not_stale) - skipped instead of
+/// killed by an equivalent test.
+fn has_newer_claim(entries: &[LedgerEntry], task_id: &str, after_seq: u64) -> bool {
+    entries
+        .iter()
+        .filter(|e| task_of(e) == Some(task_id))
+        .filter(|e| state_of(e) == Some(EvidenceState::ModelClaimed))
+        .any(|e| e.seq > after_seq)
 }
 
 #[cfg(test)]

@@ -29,6 +29,19 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 static RACE_WINDOW_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Test-only timing scaffolding; sleep(0) ~= no-op, mutants here are
+/// equivalent.
+///
+/// Scoped to #[cfg(test)], outside cargo-mutants' default production scope,
+/// and equivalent anyway; no skip registry entry is needed.
+#[cfg(test)]
+fn race_window_sleep() {
+    let race_ms = RACE_WINDOW_MS.load(std::sync::atomic::Ordering::SeqCst);
+    if race_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(race_ms));
+    }
+}
+
 /// A single append-only evidence entry.
 ///
 /// `seq`, `prev_hash` and `hash` are computed by [`Ledger::append`]; the
@@ -156,12 +169,7 @@ impl Ledger {
 
         let entries = self.read_entries()?;
         #[cfg(test)]
-        {
-            let race_ms = RACE_WINDOW_MS.load(std::sync::atomic::Ordering::SeqCst);
-            if race_ms > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(race_ms));
-            }
-        }
+        race_window_sleep();
         let next_seq = entries.len() as u64;
         let prev_hash = match entries.last() {
             Some(prev) => compute_hash(prev),
@@ -541,6 +549,17 @@ mod tests {
         let ledger = Ledger::new(&path);
         let err = ledger.read_entries().unwrap_err();
         assert!(matches!(err, LedgerError::Io(_)));
+    }
+
+    #[test]
+    fn test_iter_entries_ok_empty_when_file_missing() {
+        // Mutant guard: deleting the NotFound arm in read_entries would turn a
+        // missing ledger file into Err(Io). A missing file must read as an
+        // empty ledger.
+        let path = tmp_path("iter-missing");
+        let _ = std::fs::remove_file(&path);
+        let ledger = Ledger::new(&path);
+        assert_eq!(ledger.iter_entries().unwrap(), Vec::<EvidenceEntry>::new());
     }
 
     #[test]

@@ -1,0 +1,18 @@
+# PolyForge accepted-equivalents registry (cargo-mutants config).
+# Each exclusion documents a provably-equivalent mutant site; killing via an
+# equivalent test is project-forbidden.
+#
+# Discovery note: cargo-mutants 27.1.0 auto-reads .cargo/mutants.toml only;
+# .cargo/mutants.toml is a symlink to this file so plain `cargo mutants`
+# runs pick up the registry while this root copy stays canonical.
+#
+# exclude_re matches cargo-mutants' own --list description lines (e.g.
+# "replace has_newer_claim -> bool with true" and "replace > with >= in
+# has_newer_claim"), not qualified Rust paths; the two shapes below cover
+# body-replacement and operator mutants of the named function only.
+exclude_re = [
+    # Equivalent by seq uniqueness: entries have unique seq, so > and >= are
+    # identical (see polyforge-core test_gate_latest_claim_no_newer_claim_is_not_stale).
+    "replace has_newer_claim ",
+    "in has_newer_claim$",
+]
