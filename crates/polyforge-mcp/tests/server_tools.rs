@@ -632,3 +632,66 @@ async fn test_stdio_roundtrip_without_token() -> anyhow::Result<()> {
     child.wait().await?;
     Ok(())
 }
+
+/// Mutation guard for main(): a token SET but EMPTY must take the
+/// `!value.is_empty()` guard-false path and fail closed like a missing one;
+/// without that guard an empty string would start serving ungated.
+#[tokio::test(flavor = "current_thread")]
+async fn test_tcp_fails_closed_with_empty_token() -> anyhow::Result<()> {
+    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_polyforge-mcp"))
+        .env("PF_MCP_TRANSPORT", "tcp")
+        .env("PF_MCP_ADDR", "127.0.0.1:0")
+        .env("PF_MCP_TOKEN", "")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(15), child.wait_with_output())
+            .await
+        {
+            Ok(output) => output?,
+            Err(_) => panic!("empty PF_MCP_TOKEN must exit promptly (fail closed), not serve"),
+        };
+    assert!(
+        !output.status.success(),
+        "empty PF_MCP_TOKEN must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("non-empty PF_MCP_TOKEN"),
+        "stderr: {stderr}"
+    );
+    Ok(())
+}
+
+/// Mutation guard, true side of the same arm: a non-empty token must pass
+/// the guard and reach the listening state instead of exiting.
+#[tokio::test(flavor = "current_thread")]
+async fn test_tcp_non_empty_token_reaches_listening() -> anyhow::Result<()> {
+    use tokio::io::AsyncBufReadExt;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_polyforge-mcp"))
+        .env("PF_MCP_TRANSPORT", "tcp")
+        .env("PF_MCP_ADDR", "127.0.0.1:0")
+        .env("PF_MCP_TOKEN", "guard-test-token")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let mut lines = tokio::io::BufReader::new(stderr).lines();
+    let line =
+        match tokio::time::timeout(std::time::Duration::from_secs(15), lines.next_line()).await {
+            Ok(line) => line?,
+            Err(_) => panic!("server must reach the listening state with a non-empty token"),
+        };
+    let line = line.expect("stderr stream must not end before listening");
+    assert!(
+        line.contains("listening on"),
+        "unexpected first stderr line: {line}"
+    );
+    child.kill().await?;
+    child.wait().await?;
+    Ok(())
+}

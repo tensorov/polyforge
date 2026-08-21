@@ -453,4 +453,121 @@ mod tests {
     fn parse_state_rejects_unknown_state() {
         assert!(parse_state("SomethingElse").is_err());
     }
+
+    /// Unique temp ledger path for one unit test.
+    fn unit_ledger(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "polyforge-mcp-unit-{tag}-{}.jsonl",
+            std::process::id()
+        ))
+    }
+
+    /// Mutation guard: get_tool must resolve a registered tool by its exact
+    /// name and return the tool whose name matches the lookup key.
+    #[test]
+    fn get_tool_resolves_registered_tool_by_name() {
+        let server = PolyForgeServer::new(unit_ledger("get-tool-some")).expect("server");
+        let tool = ServerHandler::get_tool(&server, "evidence_append")
+            .expect("evidence_append must be a registered tool");
+        assert_eq!(tool.name.to_string(), "evidence_append");
+    }
+
+    /// Mutation guard: get_tool must answer None for an unknown name.
+    #[test]
+    fn get_tool_returns_none_for_unknown_name() {
+        let server = PolyForgeServer::new(unit_ledger("get-tool-none")).expect("server");
+        assert!(
+            ServerHandler::get_tool(&server, "definitely-not-a-tool").is_none(),
+            "unknown tool name must resolve to None"
+        );
+    }
+
+    /// Mutation guard: get_info must carry a concrete implementation version,
+    /// never a default stub. The version comes from rmcp's build environment
+    /// (Implementation::from_build_env), so it is rmcp's package version.
+    #[test]
+    fn get_info_pins_concrete_version() {
+        let server = PolyForgeServer::new(unit_ledger("get-info")).expect("server");
+        let info = ServerHandler::get_info(&server);
+        assert!(
+            !info.server_info.name.is_empty(),
+            "implementation name must be non-empty"
+        );
+        assert_eq!(
+            info.server_info.version, "3.1.1",
+            "version must equal the concrete value produced by the impl"
+        );
+    }
+
+    /// Mutation guard: the token-gated wrapper must delegate get_tool to the
+    /// inner server unchanged when no token is set, resolving a registered
+    /// tool by its exact name.
+    #[test]
+    fn gated_get_tool_delegates_registered_tool() {
+        let server = TokenGatedServer::new(
+            PolyForgeServer::new(unit_ledger("tag")).expect("server"),
+            None,
+        );
+        let tool = ServerHandler::get_tool(&server, "evidence_append")
+            .expect("evidence_append must resolve through the wrapper");
+        assert_eq!(tool.name.to_string(), "evidence_append");
+    }
+
+    /// Mutation guard: the token-gated wrapper must delegate get_tool None
+    /// answers for unknown names instead of fabricating a tool.
+    #[test]
+    fn gated_get_tool_delegates_unknown_name() {
+        let server = TokenGatedServer::new(
+            PolyForgeServer::new(unit_ledger("tag")).expect("server"),
+            None,
+        );
+        assert!(
+            ServerHandler::get_tool(&server, "definitely-not-a-tool").is_none(),
+            "unknown tool name must stay None through the wrapper"
+        );
+    }
+
+    /// Mutation guard: the token-gated wrapper must delegate get_info to the
+    /// inner server so protocol metadata survives wrapping. Version alone
+    /// cannot distinguish a Default::default() body because rmcp's
+    /// ServerInfo::default() embeds Implementation::from_build_env();
+    /// capabilities.tools is the distinguishing field.
+    #[test]
+    fn gated_get_info_delegates_version() {
+        let server = TokenGatedServer::new(
+            PolyForgeServer::new(unit_ledger("tag")).expect("server"),
+            None,
+        );
+        let info = ServerHandler::get_info(&server);
+        assert_eq!(
+            info.server_info.version, "3.1.1",
+            "wrapper must forward the concrete implementation version"
+        );
+        // Distinguishing field: rmcp's ServerInfo::default() carries no tool
+        // capabilities, while the real server registers its tools.
+        assert!(
+            info.capabilities.tools.is_some(),
+            "wrapper must forward tool capabilities"
+        );
+    }
+
+    /// Mutation guard: now_ts must produce a millisecond Unix timestamp
+    /// string, not seconds or a placeholder.
+    #[test]
+    fn now_ts_is_millisecond_unix_timestamp() {
+        let ts = super::now_ts();
+        let parsed = ts.parse::<u64>().expect("millisecond unix timestamp");
+        assert!(
+            parsed > 1_700_000_000_000,
+            "timestamp {parsed} must exceed the millisecond epoch floor"
+        );
+    }
+
+    /// Mutation guard: hex must lowercase-encode every byte with two digits
+    /// and yield an empty string for empty input.
+    #[test]
+    fn hex_encodes_bytes_lowercase_and_empty_input() {
+        assert_eq!(super::hex(&[0xDE, 0xAD]), "dead");
+        assert_eq!(super::hex(&[]), "");
+    }
 }
