@@ -4,6 +4,16 @@
 //! typed args and its attestation being appended. No shell interpolation
 //! anywhere: we spawn the binary directly via [`std::process::Command`], never
 //! `sh -c` / `bash -c` / `/bin/sh`.
+//!
+//! # Trust boundary
+//!
+//! The allowlist guarantees a bounded set of fixed-name binaries, typed
+//! arguments without a shell, a wall-clock timeout, and attribution (env
+//! fingerprint, git state). It does NOT guarantee that attestations are
+//! TRUE: allowlisted tools execute project code (conftest.py,
+//! vite.config.ts, eslint.config.js, build.rs) written by the verified
+//! agent. Attestation truth comes from mutation testing, keyed gates, and
+//! the operator Validated stage.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -133,6 +143,57 @@ pub fn allowlist() -> Vec<Tool> {
             name: "cargo-mutants".into(),
             bin: PathBuf::from("cargo-mutants"),
             args: vec![],
+        },
+        // v2: Python and JavaScript/TypeScript attestation tools (roadmap 1.3).
+        Tool {
+            name: "pytest".into(),
+            bin: PathBuf::from("pytest"),
+            args: vec![],
+        },
+        Tool {
+            name: "ruff check".into(),
+            bin: PathBuf::from("ruff"),
+            args: vec!["check".into()],
+        },
+        Tool {
+            name: "ruff format --check".into(),
+            bin: PathBuf::from("ruff"),
+            args: vec!["format".into(), "--check".into()],
+        },
+        Tool {
+            name: "mypy".into(),
+            bin: PathBuf::from("mypy"),
+            args: vec![],
+        },
+        Tool {
+            name: "pyright".into(),
+            bin: PathBuf::from("pyright"),
+            args: vec![],
+        },
+        Tool {
+            name: "uv --version".into(),
+            bin: PathBuf::from("uv"),
+            args: vec!["--version".into()],
+        },
+        Tool {
+            name: "vitest run".into(),
+            bin: PathBuf::from("vitest"),
+            args: vec!["run".into()],
+        },
+        Tool {
+            name: "tsc".into(),
+            bin: PathBuf::from("tsc"),
+            args: vec!["--noEmit".into()],
+        },
+        Tool {
+            name: "eslint".into(),
+            bin: PathBuf::from("eslint"),
+            args: vec![],
+        },
+        Tool {
+            name: "biome check".into(),
+            bin: PathBuf::from("biome"),
+            args: vec!["check".into()],
         },
     ]
 }
@@ -905,6 +966,25 @@ mod tests {
         let t = lookup("cargo-mutants").expect("cargo-mutants on allowlist");
         assert_eq!(t.name, "cargo-mutants");
         assert_eq!(t.bin, PathBuf::from("cargo-mutants"));
+    }
+
+    /// All v2 Python/JS-TS tools must be resolvable by exact name.
+    #[test]
+    fn allowlist_v2_tools_are_lookupable() {
+        for name in [
+            "pytest",
+            "ruff check",
+            "ruff format --check",
+            "mypy",
+            "pyright",
+            "uv --version",
+            "vitest run",
+            "tsc",
+            "eslint",
+            "biome check",
+        ] {
+            assert!(lookup(name).is_some(), "{name} must be on the allowlist");
+        }
     }
 
     #[test]
