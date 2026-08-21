@@ -16,6 +16,10 @@ use polyforge_core::evidence::EvidenceEntry;
 use sha2::{Digest, Sha256};
 
 /// A tool on the allowlist.
+///
+/// When handed to [`run`] / [`run_with_timeout`] / [`spawn`], only `name`
+/// selects what executes: the canonical allowlist entry supplies the binary
+/// and fixed args, and `bin` / `args` of a caller-built struct are ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tool {
     /// Canonical allowlist name, e.g. `"cargo --version"`.
@@ -140,15 +144,19 @@ pub fn lookup(name: &str) -> Option<Tool> {
 
 /// Spawn an allowlisted tool with typed args, no shell. Returns the live child
 /// with piped stdio so callers can inspect `/proc/<pid>/cmdline` while it runs.
+///
+/// Invariant: the allowlist entry is the single source of truth for the
+/// binary identity and fixed args; caller-supplied [`Tool`] fields other than
+/// `name` are ignored. The canonical entry is resolved internally and only it
+/// is executed, so a hand-built `Tool` cannot smuggle an unallowlisted binary
+/// past the name gate.
 pub fn spawn(tool: &Tool, args: &[String]) -> Result<Child, RunnerError> {
-    if lookup(&tool.name).is_none() {
-        return Err(RunnerError::NotAllowed(tool.name.clone()));
-    }
+    let canonical = lookup(&tool.name).ok_or_else(|| RunnerError::NotAllowed(tool.name.clone()))?;
     for a in args {
-        validate_arg(&tool.name, a)?;
+        validate_arg(&canonical.name, a)?;
     }
-    let mut cmd = Command::new(&tool.bin);
-    cmd.args(&tool.args).args(args);
+    let mut cmd = Command::new(&canonical.bin);
+    cmd.args(&canonical.args).args(args);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -167,6 +175,11 @@ pub fn spawn(tool: &Tool, args: &[String]) -> Result<Child, RunnerError> {
 /// [`DEFAULT_TOOL_TIMEOUT_SECS`]). A tool that outlives the budget is killed
 /// together with its process group and the run fails with
 /// [`RunnerError::TimedOut`].
+///
+/// Invariant: the allowlist entry is the single source of truth for the
+/// binary identity and fixed args; caller-supplied [`Tool`] fields other than
+/// `name` are ignored, including in the attested `command` string and the
+/// resolved `tool_version`.
 pub fn run(tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
     run_with_timeout(tool, args, parse_timeout())
 }
@@ -177,13 +190,14 @@ pub fn run_with_timeout(
     args: &[String],
     timeout: Duration,
 ) -> Result<RunOutput, RunnerError> {
+    let canonical = lookup(&tool.name).ok_or_else(|| RunnerError::NotAllowed(tool.name.clone()))?;
     let child = spawn(tool, args)?;
     let out = wait_with_timeout(child, timeout)?;
-    let exit_code = out.status.code().unwrap_or(-1);
+    let exit_code = exit_code_of(out.status);
     let stdout_hash = sha256_hex(&out.stdout);
-    let tool_version = tool_version(&tool.bin);
+    let tool_version = tool_version(&canonical.bin);
     let env_fingerprint = env_fingerprint(&tool_version);
-    let command = command_string(tool, args);
+    let command = command_string(&canonical, args);
     Ok(RunOutput {
         stdout: out.stdout,
         stderr: out.stderr,
@@ -193,6 +207,12 @@ pub fn run_with_timeout(
         tool_version,
         command,
     })
+}
+
+/// Attested exit code: the child's numeric status when it exited normally,
+/// or -1 when it was killed by a signal (`status.code() == None`).
+fn exit_code_of(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(-1)
 }
 
 /// Wait for a spawned child to finish, but no longer than `timeout`. A
@@ -495,9 +515,6 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use polyforge_core::evidence::{EvidenceKind, EvidenceState};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static SCRIPT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn tool(name: &str) -> Tool {
         lookup(name).expect("tool on allowlist")
@@ -512,6 +529,31 @@ mod tests {
         };
         let err = run(&evil, &[]).unwrap_err();
         assert!(matches!(err, RunnerError::NotAllowed(n) if n == "evil"));
+    }
+
+    /// Mutation/audit guard: run must execute the CANONICAL allowlist entry,
+    /// never caller-supplied bin/args. A hand-built Tool carrying an
+    /// allowlisted name but a hostile bin must be neutralized to the real
+    /// allowlisted command.
+    #[test]
+    fn spawn_uses_canonical_allowlist_entry_not_caller_bin() {
+        let hostile = Tool {
+            name: "cargo --version".into(),
+            bin: PathBuf::from("echo"),
+            args: vec!["PWNED".into()],
+        };
+        let out = run(&hostile, &[]).expect("canonical cargo --version must run");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.contains("PWNED"),
+            "caller-supplied bin/args must be ignored"
+        );
+        assert!(stdout.contains("cargo"), "canonical binary must execute");
+        assert!(
+            out.command.starts_with("cargo"),
+            "attested command string must reflect the canonical entry: {}",
+            out.command
+        );
     }
 
     #[test]
@@ -1019,36 +1061,31 @@ mod tests {
         assert_eq!(out.stdout_hash.len(), 64);
     }
 
-    // Mutant 10 (runner.rs:182:49, delete `-`): a child killed by a signal has
-    // `status.code() == None`; the original maps that to exit_code -1, the
-    // mutant to +1. A self-killing script (kills its own process group, of
-    // which it is the leader via process_group(0)) produces exactly that.
+    // Mutant 10 (exit_code_of, delete `-` in unwrap_or(-1)): a child killed
+    // by a signal has status.code() == None; correct mapping is -1, the
+    // mutant yields +1. The old spawn-based vehicle (hand-built Tool with a
+    // self-killing script bin) is impossible by design now: canonical
+    // resolution ignores caller-supplied bins, so the mapping is unit-tested
+    // directly on exit_code_of.
     #[cfg(unix)]
     #[test]
     fn test_signal_killed_child_reports_minus_one() {
-        use std::os::unix::fs::PermissionsExt;
-        let n = SCRIPT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let script =
-            std::env::temp_dir().join(format!("pf-selfkill-{}-{n}.sh", std::process::id()));
-        let _ = std::fs::remove_file(&script);
-        std::fs::write(&script, "#!/bin/sh\nkill -KILL -$$\n").expect("script written");
-        let mut perms = std::fs::metadata(&script)
-            .expect("script metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).expect("script made executable");
-        let t = Tool {
-            name: "cargo --version".into(), // allowlisted name passes the gate
-            bin: script.clone(),
-            args: vec![],
-        };
-        let out = run_with_timeout(&t, &[], Duration::from_secs(30)).unwrap();
-        assert_eq!(
-            out.exit_code, -1,
-            "signal-killed child must map to -1, got {}",
-            out.exit_code
+        use std::os::unix::process::ExitStatusExt;
+        let signaled = std::process::ExitStatus::from_raw(9); // SIGKILL, no core
+        assert!(
+            signaled.code().is_none(),
+            "raw wait status 9 must be signal-terminated"
         );
-        let _ = std::fs::remove_file(&script);
+        assert_eq!(
+            super::exit_code_of(signaled),
+            -1,
+            "signal-killed child must map to -1"
+        );
+        assert_eq!(
+            super::exit_code_of(std::process::ExitStatus::from_raw(0)),
+            0,
+            "clean exit must stay 0"
+        );
     }
 
     // Mutant 12 (runner.rs:422:5, tool_version -> "xyzzy"): the resolved
