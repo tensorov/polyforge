@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "polyforge": {
+      "command": "polyforge-mcp",
+      "args": [],
+      "env": {
+        "PF_MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}

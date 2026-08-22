@@ -1,0 +1,5 @@
+# Register polyforge-mcp for Codex (merge into ~/.codex/config.toml).
+# Mirrors the Agent integration section of the PolyForge README.
+[mcp_servers.polyforge]
+command = "polyforge-mcp"
+env = { PF_MCP_TRANSPORT = "stdio" }
