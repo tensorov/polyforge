@@ -13,6 +13,7 @@ use polyforge_core::{EvidenceState, GateError};
 use ratatui::crossterm::event::KeyCode;
 
 use crate::toast::Toast;
+use crate::validate::{validate_bulk, validate_single};
 
 /// Toast lifetime in ticks; the render loop drives [`Toast::tick`].
 const TOAST_TTL_TICKS: u32 = 30;
@@ -26,6 +27,25 @@ const DEFAULT_LEDGER: &str = ".pf/ledger.jsonl";
 pub enum Pane {
     List,
     Detail,
+}
+
+/// A validation action awaiting operator confirmation.
+///
+/// While a modal is open it owns keyboard focus: only `Enter` (execute) and
+/// `Esc` (cancel) reach it; navigation keys are swallowed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingConfirm {
+    /// Validate the one task under the selection (`v`).
+    Single { task_id: String },
+    /// Validate every currently `Verified` task at once (`A`).
+    Bulk { tasks: Vec<String> },
+}
+
+/// Free-form rationale capture (`r`): printable keystrokes land in
+/// [`InputMode::buffer`] until `Enter` commits or `Esc` discards them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InputMode {
+    pub buffer: String,
 }
 
 /// Application state: the task map, the selection, and the detail cache.
@@ -42,6 +62,13 @@ pub struct App {
     pub toasts: Vec<Toast>,
     pub error_screen: Option<String>,
     pub should_quit: bool,
+    /// Confirmation modal state; while set it owns keyboard focus.
+    pub pending_confirm: Option<PendingConfirm>,
+    /// Rationale input mode; while set, printable keys edit its buffer.
+    pub input_mode: Option<InputMode>,
+    /// Rationale committed via `Enter` in input mode; consumed by
+    /// single-task validation.
+    pub pending_rationale: Option<String>,
 }
 
 impl std::fmt::Debug for App {
@@ -58,6 +85,9 @@ impl std::fmt::Debug for App {
             )
             .field("error_screen", &self.error_screen)
             .field("should_quit", &self.should_quit)
+            .field("pending_confirm", &self.pending_confirm)
+            .field("input_mode", &self.input_mode)
+            .field("pending_rationale", &self.pending_rationale)
             .finish()
     }
 }
@@ -87,6 +117,9 @@ impl App {
             toasts: Vec::new(),
             error_screen: None,
             should_quit: false,
+            pending_confirm: None,
+            input_mode: None,
+            pending_rationale: None,
         };
         match latest_state_per_task(&ledger) {
             Ok(tasks) => App { tasks, ..base },
@@ -130,9 +163,86 @@ impl App {
             .collect();
     }
 
-    /// Handle a key press. Movement is bounds-clamped; `Enter` toggles the
-    /// pane; `q` quits; anything else is a no-op.
+    /// Re-read the ledger's latest state per task into `tasks`.
+    ///
+    /// Mirrors [`App::load`]'s read path without rebuilding the app: the
+    /// selection is clamped to the new task count so a shrinking map cannot
+    /// leave a dangling index. Integrity failures land on the error screen.
+    pub fn reload_tasks(&mut self) {
+        if self.error_screen.is_some() {
+            return;
+        }
+        let ledger = Ledger::new(&self.ledger_path);
+        match latest_state_per_task(&ledger) {
+            Ok(tasks) => {
+                self.tasks = tasks;
+                self.selected = self.selected.min(self.tasks.len().saturating_sub(1));
+            }
+            Err(err) => self.error_screen = Some(format!("{err}")),
+        }
+    }
+
+    /// Handle a key press through the three-state router.
+    ///
+    /// Priority: confirmation modal > rationale input mode > normal
+    /// navigation. While a modal or input mode owns focus, movement keys do
+    /// not leak through.
     pub fn handle_key(&mut self, key: KeyCode) {
+        if self.pending_confirm.is_some() {
+            self.handle_modal_key(key);
+        } else if self.input_mode.is_some() {
+            self.handle_input_key(key);
+        } else {
+            self.handle_normal_key(key);
+        }
+    }
+
+    /// Modal routing: `Enter` executes the pending action, `Esc` cancels,
+    /// everything else is swallowed.
+    fn handle_modal_key(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Enter => {
+                if let Some(pending) = self.pending_confirm.take() {
+                    match pending {
+                        PendingConfirm::Single { task_id } => self.execute_single(&task_id),
+                        PendingConfirm::Bulk { tasks } => self.execute_bulk(&tasks),
+                    }
+                }
+            }
+            KeyCode::Esc => self.pending_confirm = None,
+            _ => {}
+        }
+    }
+
+    /// Input-mode routing: printable characters and Backspace edit the
+    /// buffer, `Enter` commits it as the pending rationale, `Esc` discards.
+    fn handle_input_key(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char(c) => {
+                if let Some(mode) = self.input_mode.as_mut() {
+                    mode.buffer.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(mode) = self.input_mode.as_mut() {
+                    mode.buffer.pop();
+                }
+            }
+            KeyCode::Enter => {
+                self.pending_rationale = Some(
+                    self.input_mode
+                        .take()
+                        .map(|mode| mode.buffer)
+                        .unwrap_or_default(),
+                );
+            }
+            KeyCode::Esc => self.input_mode = None,
+            _ => {}
+        }
+    }
+
+    /// Normal routing: navigation plus the validation entry points.
+    fn handle_normal_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
@@ -156,8 +266,70 @@ impl App {
                 }
             }
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('v') => {
+                if let Some(task_id) = self.selected_task_id().map(str::to_string) {
+                    self.pending_confirm = Some(PendingConfirm::Single { task_id });
+                }
+            }
+            KeyCode::Char('A') => {
+                let verified: Vec<String> = self
+                    .tasks
+                    .iter()
+                    .filter(|&(_, state)| *state == EvidenceState::Verified)
+                    .map(|(task_id, _)| task_id.clone())
+                    .collect();
+                if verified.is_empty() {
+                    self.push_toast("nothing to validate");
+                } else {
+                    self.pending_confirm = Some(PendingConfirm::Bulk { tasks: verified });
+                }
+            }
+            KeyCode::Char('r') => self.input_mode = Some(InputMode::default()),
             _ => {}
         }
+    }
+
+    /// Run single-task validation for the confirmed modal.
+    ///
+    /// Consumes any committed rationale (falling back to the default
+    /// wording), turns the outcome into a toast, and refreshes the task map
+    /// plus detail cache. Engine errors move onto the error screen.
+    fn execute_single(&mut self, task_id: &str) {
+        let rationale = self
+            .pending_rationale
+            .take()
+            .unwrap_or_else(|| "lazyforge operator validation".to_string());
+        match validate_single(&self.ledger_path, task_id, &rationale) {
+            Ok(outcome) => {
+                if outcome.appended {
+                    self.push_toast(format!("validated {task_id}"));
+                } else if let Some(skip) = outcome.skip {
+                    self.push_toast(format!("{task_id}: {}", skip.message()));
+                }
+            }
+            Err(err) => self.error_screen = Some(err),
+        }
+        self.reload_tasks();
+        self.refresh_detail();
+    }
+
+    /// Run bulk validation over the confirmed task list.
+    ///
+    /// The summary toast carries appended and skipped counts; per-task skip
+    /// reasons stay in the engine report. Same refresh contract as
+    /// [`App::execute_single`].
+    fn execute_bulk(&mut self, tasks: &[String]) {
+        const BULK_RATIONALE: &str = "lazyforge bulk validate";
+        match validate_bulk(&self.ledger_path, tasks, BULK_RATIONALE) {
+            Ok(report) => self.push_toast(format!(
+                "done {}, skipped {}",
+                report.appended,
+                report.skipped.len()
+            )),
+            Err(err) => self.error_screen = Some(err),
+        }
+        self.reload_tasks();
+        self.refresh_detail();
     }
 
     /// Push a toast with the standard 30-tick lifetime.
@@ -339,6 +511,186 @@ mod tests {
         assert_eq!(
             app.entries_of_selected,
             vec![("ModelClaim".to_string(), "ModelClaimed".to_string())]
+        );
+    }
+
+    /// Seed claim + tool attestation: the task ends `Verified`.
+    fn seed_verified(path: &Path, task: &str) {
+        let mut ledger = Ledger::new(path);
+        let c = claim(task);
+        let v = promote(&c, &attestation(task)).unwrap();
+        ledger.append(c.to_ledger_entry()).unwrap();
+        ledger.append(v.to_ledger_entry()).unwrap();
+    }
+
+    fn entry_count(path: &Path) -> usize {
+        Ledger::new(path).iter_entries().unwrap().len()
+    }
+
+    #[test]
+    fn v_on_selected_verified_task_opens_single_modal() {
+        let path = tmp_ledger_path("v-single");
+        seed_verified(&path, "task-v");
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('v'));
+        assert_eq!(
+            app.pending_confirm,
+            Some(PendingConfirm::Single {
+                task_id: "task-v".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn bulk_all_with_no_verified_tasks_toasts_and_stays_closed() {
+        let path = tmp_ledger_path("a-empty");
+        // task-a Validated + task-b ModelClaimed: zero Verified tasks.
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('A'));
+        assert!(app.pending_confirm.is_none());
+        assert!(
+            app.toasts
+                .iter()
+                .any(|t| t.message() == "nothing to validate"),
+            "expected the nothing-to-validate toast"
+        );
+    }
+
+    #[test]
+    fn bulk_all_collects_verified_tasks_in_map_order() {
+        let path = tmp_ledger_path("a-bulk");
+        seed_verified(&path, "t-1");
+        seed_verified(&path, "t-2");
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('A'));
+        assert_eq!(
+            app.pending_confirm,
+            Some(PendingConfirm::Bulk {
+                tasks: vec!["t-1".to_string(), "t-2".to_string()]
+            })
+        );
+    }
+
+    #[test]
+    fn modal_enter_executes_single_validation() {
+        let path = tmp_ledger_path("enter-exec");
+        seed_verified(&path, "task-x");
+        let before = entry_count(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('v'));
+        app.handle_key(KeyCode::Enter);
+
+        let entries = Ledger::new(&path).iter_entries().unwrap();
+        assert_eq!(entries.len(), before + 1, "exactly one new entry");
+        let last = entries.last().unwrap();
+        assert_eq!(last.kind, "Validation");
+        assert_eq!(last.payload["state"], "Validated");
+        assert_eq!(
+            last.payload["rationale"], "lazyforge operator validation",
+            "default rationale applies when none was committed"
+        );
+        assert!(
+            app.toasts.iter().any(|t| t.message().contains("validated")),
+            "expected a validated toast, got {:?}",
+            app.toasts.iter().map(|t| t.message()).collect::<Vec<_>>()
+        );
+        assert!(app.pending_confirm.is_none());
+    }
+
+    #[test]
+    fn modal_esc_cancels_without_touching_the_ledger() {
+        let path = tmp_ledger_path("esc-cancel");
+        seed_verified(&path, "task-y");
+        let before = entry_count(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('v'));
+        app.handle_key(KeyCode::Esc);
+
+        assert!(app.pending_confirm.is_none());
+        assert_eq!(entry_count(&path), before, "cancel writes nothing");
+    }
+
+    #[test]
+    fn input_mode_captures_rationale_and_esc_discards() {
+        let path = tmp_ledger_path("input-mode");
+        seed_verified(&path, "task-i");
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('r'));
+        assert!(app.input_mode.is_some());
+        app.handle_key(KeyCode::Char('o'));
+        app.handle_key(KeyCode::Char('k'));
+        assert_eq!(
+            app.input_mode.as_ref().map(|m| m.buffer.as_str()),
+            Some("ok")
+        );
+        app.handle_key(KeyCode::Backspace);
+        assert_eq!(
+            app.input_mode.as_ref().map(|m| m.buffer.as_str()),
+            Some("o"),
+            "backspace pops the buffer"
+        );
+        app.handle_key(KeyCode::Char('k'));
+
+        app.handle_key(KeyCode::Enter);
+        assert!(app.input_mode.is_none());
+        assert_eq!(app.pending_rationale.as_deref(), Some("ok"));
+
+        // A fresh capture discarded by Esc leaves the earlier commit intact.
+        app.handle_key(KeyCode::Char('r'));
+        app.handle_key(KeyCode::Char('x'));
+        app.handle_key(KeyCode::Esc);
+        assert!(app.input_mode.is_none());
+        assert_eq!(app.pending_rationale.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn modal_open_swallows_navigation_keys() {
+        let path = tmp_ledger_path("modal-no-leak");
+        seed_verified(&path, "t-1");
+        seed_verified(&path, "t-2");
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('v'));
+        assert!(app.pending_confirm.is_some(), "modal must be open");
+
+        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char('k'));
+        app.handle_key(KeyCode::Up);
+        assert_eq!(
+            app.selected, 0,
+            "selection must not move while the modal is open"
+        );
+        assert_eq!(
+            app.pending_confirm,
+            Some(PendingConfirm::Single {
+                task_id: "t-1".to_string()
+            }),
+            "modal stays open and unchanged"
+        );
+    }
+
+    #[test]
+    fn execute_single_reloads_tasks_map_to_validated() {
+        let path = tmp_ledger_path("reload-validated");
+        seed_verified(&path, "task-r");
+        let mut app = App::load(&path);
+        assert_eq!(app.tasks.get("task-r"), Some(&EvidenceState::Verified));
+
+        app.handle_key(KeyCode::Char('v'));
+        app.handle_key(KeyCode::Enter);
+
+        assert_eq!(
+            app.tasks.get("task-r"),
+            Some(&EvidenceState::Validated),
+            "tasks map must reflect the appended validation"
         );
     }
 }
