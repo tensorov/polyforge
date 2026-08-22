@@ -99,6 +99,32 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+## Python / TypeScript repos
+
+The v2 allowlist attests Python and JS/TS tools: `pytest`, `ruff check`,
+`ruff format --check`, `mypy`, `pyright`, `uv --version`, `vitest run`, `tsc`
+(`--noEmit`), `eslint`, and `biome check`.
+
+Install stays cargo-based: `cargo install polyforge-cli polyforge-mcp` requires a Rust
+toolchain.
+
+Tools resolve from the PATH of the polyforge process; activating your project's venv before
+running attestations is operator duty.
+
+Mutating or code-loading flags are denied at validation: `--fix` / `--unsafe-fixes` (ruff
+check), `--fix` / `--rulesdir` / `--resolve-plugins-relative-to` and non-builtin `--format`
+values (eslint), `--apply` / `--apply-unsafe` / `--write` (biome check), `-u` / `--update`
+(vitest run), `-p` (except `-p no:*`) and `--pdb` (pytest). `gcc -v` accepts no extra args.
+Package runners (`uv run`, `npx`, `npm exec`) are excluded entirely: their argv resolves an
+unbounded binary set.
+
+Environment fingerprints fold `uv.lock`, `pnpm-lock.yaml`, `package-lock.json` and
+`yarn.lock` when present, discovered from the git root or cwd ancestors - no Cargo.toml
+required.
+
+CI users on foreign repos: add a Rust toolchain step (e.g. dtolnay/rust-toolchain) BEFORE
+`tensorov/polyforge-action@v1` - the action runs `cargo install polyforge-cli --locked`.
+
 ## Quick start
 
 ![PolyForge CLI demo](assets/readme/cli-demo.svg)

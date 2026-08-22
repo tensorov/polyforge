@@ -108,3 +108,12 @@ whenever the trust boundaries change.
 | State injection: `ToolAttestation`, `Validation`, `EvalAttestation`, and `Discrepancy` are rejected at the MCP server, so a model cannot inject promoted states | Forward-only state machine: promotion cannot be rolled back, so a mistaken or malicious attestation cannot be undone in place |
 | Fail-closed gate: a corrupted chain or unmet required state exits non-zero and never fabricates a bundle | |
 | Fail-closed TCP token: `PF_MCP_TRANSPORT=tcp` requires `PF_MCP_TOKEN` and defaults to loopback | |
+
+### What the allowlist does and does not guarantee
+
+The tool allowlist guarantees a bounded set of fixed-name binaries, typed arguments without
+a shell, a wall-clock timeout, and attribution (environment fingerprint, git state). It does
+NOT guarantee that attestations are TRUE: allowlisted tools execute project code
+(`conftest.py`, `vite.config.ts`, `eslint.config.js`, `build.rs`) written by the verified
+agent. Attestation truth comes from mutation testing, keyed gates, and the operator
+Validated stage.
