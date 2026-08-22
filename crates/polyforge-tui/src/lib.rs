@@ -4,3 +4,4 @@ pub mod app;
 pub mod theme;
 pub mod toast;
 pub mod ui;
+pub mod validate;

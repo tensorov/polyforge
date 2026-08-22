@@ -166,7 +166,10 @@ impl App {
     }
 
     /// The task id under the current selection (`None` when empty).
-    fn selected_task_id(&self) -> Option<&str> {
+    ///
+    /// Public so the validation keybindings (T8b) can hand the selected task
+    /// to [`crate::validate::validate_single`] / `validate_bulk`.
+    pub fn selected_task_id(&self) -> Option<&str> {
         self.tasks.keys().nth(self.selected).map(String::as_str)
     }
 }
