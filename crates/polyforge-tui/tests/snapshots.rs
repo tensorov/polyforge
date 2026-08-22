@@ -320,3 +320,85 @@ fn filter_indicator_in_status_bar() {
         "filtered-out task must not render:\n{screen}"
     );
 }
+
+#[test]
+fn filtered_list_snapshot() {
+    // The committed '/' filter narrows the rendered list to matching task
+    // ids only: alpha stays on screen, beta disappears from every pane.
+    let path = tmp_ledger_path("filter-list");
+    write_two_task_ledger(&path);
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('/'));
+    for c in ['a', 'l', 'p'] {
+        app.handle_key(KeyCode::Char(c));
+    }
+    app.handle_key(KeyCode::Enter);
+
+    let screen = render_to_string(&app, 120, 30);
+    assert!(
+        screen.contains("Tasks [1]"),
+        "list title must count only visible tasks:\n{screen}"
+    );
+    assert!(screen.contains("alpha"), "matching task missing:\n{screen}");
+    assert!(
+        !screen.contains("beta"),
+        "filtered-out task must not render:\n{screen}"
+    );
+}
+
+#[test]
+fn toast_visible_then_expired() {
+    // A pushed toast renders while it has ticks left and vanishes once
+    // every toast has been ticked past its TTL (tick-driven, no wall clock).
+    let path = tmp_ledger_path("toast-ttl");
+    seed_verified(&path, "task-t");
+    let mut app = App::load(&path);
+    assert!(app.toasts.is_empty());
+
+    app.push_toast("test msg");
+
+    let visible = render_to_string(&app, 100, 30);
+    assert!(
+        visible.contains("test msg"),
+        "fresh toast must render:\n{visible}"
+    );
+
+    // No tick_toasts helper exists on App; drive Toast::tick directly until
+    // nothing is visible any more.
+    while app.toasts.iter().any(|t| t.visible()) {
+        for toast in app.toasts.iter_mut() {
+            toast.tick();
+        }
+    }
+
+    let expired = render_to_string(&app, 100, 30);
+    assert!(
+        !expired.contains("test msg"),
+        "expired toast must not render:\n{expired}"
+    );
+}
+
+#[test]
+fn bulk_summary_after_execute() {
+    // Confirming the bulk modal with Enter executes every listed validation
+    // and surfaces the summary toast with appended/skipped counts.
+    let path = tmp_ledger_path("bulk-execute");
+    seed_verified(&path, "alpha");
+    seed_verified(&path, "beta");
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('A'));
+    assert!(
+        app.pending_confirm.is_some(),
+        "'A' must open the bulk modal when Verified tasks exist"
+    );
+    app.handle_key(KeyCode::Enter);
+    assert!(app.pending_confirm.is_none(), "modal closes on execute");
+
+    let screen = render_to_string(&app, 120, 30);
+    assert!(
+        screen.contains("done 2, skipped 0"),
+        "bulk summary toast missing:\n{screen}"
+    );
+}
