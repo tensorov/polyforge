@@ -41,11 +41,23 @@ pub enum PendingConfirm {
     Bulk { tasks: Vec<String> },
 }
 
-/// Free-form rationale capture (`r`): printable keystrokes land in
+/// What free-form input mode is capturing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InputPurpose {
+    /// Rationale capture for a pending validation (`r`).
+    #[default]
+    Rationale,
+    /// Task-list substring filter (`/`).
+    Filter,
+}
+
+/// Free-form text capture: printable keystrokes land in
 /// [`InputMode::buffer`] until `Enter` commits or `Esc` discards them.
+/// The [`InputPurpose`] decides what a committed buffer means.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InputMode {
     pub buffer: String,
+    pub purpose: InputPurpose,
 }
 
 /// Application state: the task map, the selection, and the detail cache.
@@ -69,6 +81,12 @@ pub struct App {
     /// Rationale committed via `Enter` in input mode; consumed by
     /// single-task validation.
     pub pending_rationale: Option<String>,
+    /// Case-insensitive substring filter over task ids (`None` shows all).
+    pub filter: Option<String>,
+    /// Full-screen keymap overlay (`?` toggles).
+    pub show_help: bool,
+    /// Chain tail hash from the last ledger read (empty when unreadable).
+    pub tail_hash: String,
 }
 
 impl std::fmt::Debug for App {
@@ -88,6 +106,9 @@ impl std::fmt::Debug for App {
             .field("pending_confirm", &self.pending_confirm)
             .field("input_mode", &self.input_mode)
             .field("pending_rationale", &self.pending_rationale)
+            .field("filter", &self.filter)
+            .field("show_help", &self.show_help)
+            .field("tail_hash", &self.tail_hash)
             .finish()
     }
 }
@@ -120,6 +141,9 @@ impl App {
             pending_confirm: None,
             input_mode: None,
             pending_rationale: None,
+            filter: None,
+            show_help: false,
+            tail_hash: read_tail_hash(&ledger),
         };
         match latest_state_per_task(&ledger) {
             Ok(tasks) => App { tasks, ..base },
@@ -173,25 +197,34 @@ impl App {
             return;
         }
         let ledger = Ledger::new(&self.ledger_path);
+        self.tail_hash = read_tail_hash(&ledger);
         match latest_state_per_task(&ledger) {
             Ok(tasks) => {
                 self.tasks = tasks;
-                self.selected = self.selected.min(self.tasks.len().saturating_sub(1));
+                let visible_len = self.visible_tasks().len();
+                self.selected = self.selected.min(visible_len.saturating_sub(1));
             }
             Err(err) => self.error_screen = Some(format!("{err}")),
         }
     }
 
-    /// Handle a key press through the three-state router.
+    /// Handle a key press through the router.
     ///
-    /// Priority: confirmation modal > rationale input mode > normal
+    /// Priority: confirmation modal > input mode > help overlay > normal
     /// navigation. While a modal or input mode owns focus, movement keys do
-    /// not leak through.
+    /// not leak through; while the help overlay is open only `?` (close) and
+    /// `q` (quit) are honored.
     pub fn handle_key(&mut self, key: KeyCode) {
         if self.pending_confirm.is_some() {
             self.handle_modal_key(key);
         } else if self.input_mode.is_some() {
             self.handle_input_key(key);
+        } else if self.show_help {
+            match key {
+                KeyCode::Char('?') => self.show_help = false,
+                KeyCode::Char('q') => self.should_quit = true,
+                _ => {}
+            }
         } else {
             self.handle_normal_key(key);
         }
@@ -215,7 +248,7 @@ impl App {
     }
 
     /// Input-mode routing: printable characters and Backspace edit the
-    /// buffer, `Enter` commits it as the pending rationale, `Esc` discards.
+    /// buffer, `Enter` commits it per [`InputPurpose`], `Esc` discards.
     fn handle_input_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Char(c) => {
@@ -229,16 +262,28 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                self.pending_rationale = Some(
-                    self.input_mode
-                        .take()
-                        .map(|mode| mode.buffer)
-                        .unwrap_or_default(),
-                );
+                let mode = self.input_mode.take().unwrap_or_default();
+                match mode.purpose {
+                    InputPurpose::Rationale => self.pending_rationale = Some(mode.buffer),
+                    InputPurpose::Filter => self.commit_filter(mode.buffer),
+                }
             }
             KeyCode::Esc => self.input_mode = None,
             _ => {}
         }
+    }
+
+    /// Commit a filter buffer: trimmed and lowercased; an empty result
+    /// clears the filter. The selection resets into the filtered view.
+    fn commit_filter(&mut self, buffer: String) {
+        let trimmed = buffer.trim().to_lowercase();
+        self.filter = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        };
+        self.selected = 0;
+        self.refresh_detail();
     }
 
     /// Normal routing: navigation plus the validation entry points.
@@ -251,7 +296,8 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.selected = (self.selected + 1).min(self.tasks.len().saturating_sub(1));
+                let last = self.visible_tasks().len().saturating_sub(1);
+                self.selected = (self.selected + 1).min(last);
                 if self.pane == Pane::Detail {
                     self.refresh_detail();
                 }
@@ -266,6 +312,13 @@ impl App {
                 }
             }
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('?') => self.show_help = !self.show_help,
+            KeyCode::Char('/') => {
+                self.input_mode = Some(InputMode {
+                    buffer: String::new(),
+                    purpose: InputPurpose::Filter,
+                });
+            }
             KeyCode::Char('v') => {
                 if let Some(task_id) = self.selected_task_id().map(str::to_string) {
                     self.pending_confirm = Some(PendingConfirm::Single { task_id });
@@ -273,8 +326,8 @@ impl App {
             }
             KeyCode::Char('A') => {
                 let verified: Vec<String> = self
-                    .tasks
-                    .iter()
+                    .visible_tasks()
+                    .into_iter()
                     .filter(|&(_, state)| *state == EvidenceState::Verified)
                     .map(|(task_id, _)| task_id.clone())
                     .collect();
@@ -339,11 +392,38 @@ impl App {
 
     /// The task id under the current selection (`None` when empty).
     ///
-    /// Public so the validation keybindings (T8b) can hand the selected task
-    /// to [`crate::validate::validate_single`] / `validate_bulk`.
+    /// Selection indexes into the filtered view, so the id comes from
+    /// [`App::visible_tasks`], not the raw task map.
     pub fn selected_task_id(&self) -> Option<&str> {
-        self.tasks.keys().nth(self.selected).map(String::as_str)
+        self.visible_tasks()
+            .get(self.selected)
+            .map(|(task_id, _)| task_id.as_str())
     }
+
+    /// Tasks surviving the active filter, in BTreeMap order.
+    ///
+    /// `None` filter shows everything; a set filter matches case-insensitive
+    /// substrings of the task id. All selection semantics index into this
+    /// view.
+    pub fn visible_tasks(&self) -> Vec<(&String, &EvidenceState)> {
+        let Some(filter) = self.filter.as_deref() else {
+            return self.tasks.iter().collect();
+        };
+        let needle = filter.to_lowercase();
+        self.tasks
+            .iter()
+            .filter(|(task_id, _)| task_id.to_lowercase().contains(&needle))
+            .collect()
+    }
+}
+
+/// Chain tail hash for the status bar; empty when the chain cannot be read
+/// (an empty ledger has no head yet).
+fn read_tail_hash(ledger: &Ledger) -> String {
+    ledger
+        .verify_chain()
+        .map(|c| c.head_hash)
+        .unwrap_or_default()
 }
 
 /// Extract the task id from a ledger entry's payload, if present.
@@ -692,5 +772,106 @@ mod tests {
             Some(&EvidenceState::Validated),
             "tasks map must reflect the appended validation"
         );
+    }
+
+    #[test]
+    fn filter_commit_is_case_insensitive_and_clamps_selection() {
+        let path = tmp_ledger_path("filter-commit");
+        seed_verified(&path, "alpha");
+        seed_verified(&path, "beta");
+        let mut app = App::load(&path);
+
+        // Park the selection on beta so the commit must reset it.
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.selected_task_id(), Some("beta"));
+
+        app.handle_key(KeyCode::Char('/'));
+        assert_eq!(
+            app.input_mode.as_ref().map(|m| m.purpose),
+            Some(InputPurpose::Filter),
+            "'/' must open filter input mode"
+        );
+        // Uppercase keystrokes prove case-insensitive matching end to end.
+        for c in ['A', 'L', 'P'] {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        assert_eq!(app.filter.as_deref(), Some("alp"));
+        let ids: Vec<&str> = app
+            .visible_tasks()
+            .iter()
+            .map(|(task_id, _)| task_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["alpha"], "only alpha survives the filter");
+        assert_eq!(app.selected, 0, "selection resets into the filtered view");
+        assert_eq!(app.selected_task_id(), Some("alpha"));
+    }
+
+    #[test]
+    fn bulk_collects_only_visible_verified_after_filter() {
+        let path = tmp_ledger_path("filter-bulk");
+        seed_verified(&path, "alpha");
+        seed_verified(&path, "beta");
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('/'));
+        for c in ['a', 'l', 'p'] {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('A'));
+
+        assert_eq!(
+            app.pending_confirm,
+            Some(PendingConfirm::Bulk {
+                tasks: vec!["alpha".to_string()]
+            }),
+            "bulk composition must respect the active filter"
+        );
+    }
+
+    #[test]
+    fn empty_filter_commit_clears_the_filter() {
+        let path = tmp_ledger_path("filter-clear");
+        seed_verified(&path, "alpha");
+        seed_verified(&path, "beta");
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('/'));
+        app.handle_key(KeyCode::Char('a'));
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.filter.as_deref(), Some("a"));
+
+        // A whitespace-only buffer trims to empty and clears the filter.
+        app.handle_key(KeyCode::Char('/'));
+        app.handle_key(KeyCode::Char(' '));
+        app.handle_key(KeyCode::Enter);
+
+        assert!(app.filter.is_none());
+        assert_eq!(app.visible_tasks().len(), 2, "all tasks visible again");
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn question_mark_toggles_help_and_blocks_navigation() {
+        let path = tmp_ledger_path("help-toggle");
+        seed_verified(&path, "t-1");
+        seed_verified(&path, "t-2");
+        let mut app = App::load(&path);
+
+        assert!(!app.show_help);
+        app.handle_key(KeyCode::Char('?'));
+        assert!(app.show_help);
+
+        app.handle_key(KeyCode::Char('j'));
+        assert_eq!(
+            app.selected, 0,
+            "navigation must not leak through the help overlay"
+        );
+
+        app.handle_key(KeyCode::Char('?'));
+        assert!(!app.show_help, "'?' closes the overlay again");
     }
 }

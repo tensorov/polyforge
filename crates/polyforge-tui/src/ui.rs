@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, InputMode, Pane, PendingConfirm};
+use crate::app::{App, InputMode, InputPurpose, Pane, PendingConfirm};
 use crate::theme;
 use crate::validate::VALIDATOR;
 
@@ -79,11 +79,14 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_toasts(f, app, toast_row);
     draw_status_bar(f, app, status_row);
 
-    // Operator modals paint last so they sit on top of every pane.
+    // Overlays paint last so they sit on top of every pane. Precedence:
+    // confirmation modal > input mode > help overlay.
     if let Some(pending) = &app.pending_confirm {
         draw_confirm_modal(f, app, pending);
     } else if let Some(mode) = &app.input_mode {
-        draw_rationale_input(f, mode);
+        draw_input_popup(f, mode);
+    } else if app.show_help {
+        draw_help(f);
     }
 }
 
@@ -114,17 +117,23 @@ fn draw_error(f: &mut Frame, error_text: &str, area: ratatui::prelude::Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Task list pane: one row per task in BTreeMap order, `task_id` plus a
-/// state badge; the selected row carries the theme selection style.
+/// Task list pane: one row per visible task in BTreeMap order, `task_id`
+/// plus a state badge; the selected row carries the theme selection style.
 fn draw_list(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
-    let title = format!("Tasks [{}]", app.tasks.len());
+    let visible = app.visible_tasks();
+    let title = format!("Tasks [{}]", visible.len());
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(title)
         .border_style(theme::block_border_style());
 
-    if app.tasks.is_empty() {
-        let paragraph = Paragraph::new(Text::from("No tasks in ledger"))
+    let empty_hint = if app.tasks.is_empty() {
+        "No tasks in ledger"
+    } else {
+        "No tasks match filter"
+    };
+    if visible.is_empty() {
+        let paragraph = Paragraph::new(Text::from(empty_hint))
             .block(block)
             .alignment(Alignment::Center)
             .style(Style::default().fg(theme::MUTED));
@@ -132,9 +141,8 @@ fn draw_list(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
         return;
     }
 
-    let rows: Vec<Line> = app
-        .tasks
-        .iter()
+    let rows: Vec<Line> = visible
+        .into_iter()
         .enumerate()
         .map(|(index, (task_id, state))| task_row(task_id, *state, index == app.selected))
         .collect();
@@ -168,7 +176,10 @@ fn state_badge_style(state: EvidenceState) -> Style {
 /// Detail pane for the selected task: `<kind>  <state>` per entry, or a hint
 /// when there is nothing to show yet.
 fn draw_detail(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
-    let selected_task = app.tasks.keys().nth(app.selected);
+    let selected_task = app
+        .visible_tasks()
+        .get(app.selected)
+        .map(|(id, _)| id.as_str());
     let title = match selected_task {
         Some(task_id) => format!("Detail: {task_id}"),
         None => "Detail".to_string(),
@@ -224,13 +235,24 @@ fn draw_toasts(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
     f.render_widget(Paragraph::new(Text::from(line)), area);
 }
 
-/// Bottom status bar: truncated ledger path, task count, focused pane.
+/// Bottom status bar: truncated ledger path, chain head, active filter,
+/// task count, focused pane.
 fn draw_status_bar(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
     let pane_indicator = match app.pane {
         Pane::List => "List",
         Pane::Detail => "Detail",
     };
-    let tail = format!(" | {} tasks | {}", app.tasks.len(), pane_indicator);
+    let mut parts: Vec<String> = Vec::new();
+    let head: String = app.tail_hash.chars().take(12).collect();
+    if !head.is_empty() {
+        parts.push(head);
+    }
+    if let Some(filter) = app.filter.as_deref() {
+        parts.push(format!("filter: {filter}"));
+    }
+    parts.push(format!("{} tasks", app.tasks.len()));
+    parts.push(pane_indicator.to_string());
+    let tail = format!(" | {}", parts.join(" | "));
     let budget = usize::from(area.width).saturating_sub(tail.chars().count());
     let path = truncate_chars(&app.ledger_path.display().to_string(), budget);
 
@@ -296,8 +318,13 @@ fn draw_confirm_modal(f: &mut Frame, app: &App, pending: &PendingConfirm) {
     render_popup(f, title, lines);
 }
 
-/// Rationale capture popup: the buffer plus a trailing cursor marker.
-fn draw_rationale_input(f: &mut Frame, mode: &InputMode) {
+/// Free-form capture popup: the buffer plus a trailing cursor marker. The
+/// title names the capture purpose (`Rationale` or `Filter`).
+fn draw_input_popup(f: &mut Frame, mode: &InputMode) {
+    let title = match mode.purpose {
+        InputPurpose::Rationale => "Rationale",
+        InputPurpose::Filter => "Filter",
+    };
     let lines = vec![
         Line::from(format!("{}_", mode.buffer)),
         Line::from(""),
@@ -306,7 +333,28 @@ fn draw_rationale_input(f: &mut Frame, mode: &InputMode) {
             Style::default().fg(theme::MUTED),
         ),
     ];
-    render_popup(f, "Rationale", lines);
+    render_popup(f, title, lines);
+}
+
+/// Full-screen keymap overlay listing every binding, one line per key.
+fn draw_help(f: &mut Frame) {
+    const BINDINGS: [(&str, &str); 10] = [
+        ("k / j / Up / Down", "move selection"),
+        ("Enter", "toggle detail pane"),
+        ("Tab", "switch pane"),
+        ("v", "validate selected task"),
+        ("A", "bulk validate visible Verified"),
+        ("r", "rationale"),
+        ("/", "filter tasks"),
+        ("?", "toggle this help"),
+        ("q", "quit"),
+        ("mouse wheel", "scroll"),
+    ];
+    let lines: Vec<Line> = BINDINGS
+        .iter()
+        .map(|(key, desc)| Line::from(format!("{key:<18} {desc}")))
+        .collect();
+    render_popup(f, "Keymap", lines);
 }
 
 /// Shared popup chrome: centered rect, clear, rounded block with an accent

@@ -267,3 +267,56 @@ fn rationale_input_mode_renders() {
     );
     assert!(screen.contains("ok"), "buffer content missing:\n{screen}");
 }
+
+#[test]
+fn help_overlay_renders() {
+    let path = tmp_ledger_path("help-overlay");
+    seed_verified(&path, "task-h");
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('?'));
+    assert!(app.show_help, "'?' must open the help overlay");
+
+    let screen = render_to_string(&app, 100, 30);
+    assert!(
+        screen.contains("Keymap"),
+        "overlay title missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("validate"),
+        "'v validate' row missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("bulk validate"),
+        "'A bulk validate' row missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("filter"),
+        "'/ filter' row missing:\n{screen}"
+    );
+}
+
+#[test]
+fn filter_indicator_in_status_bar() {
+    let path = tmp_ledger_path("filter-status");
+    seed_verified(&path, "alpha");
+    seed_verified(&path, "beta");
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('/'));
+    for c in ['a', 'l', 'p'] {
+        app.handle_key(KeyCode::Char(c));
+    }
+    app.handle_key(KeyCode::Enter);
+
+    let screen = render_to_string(&app, 120, 30);
+    assert!(
+        screen.contains("filter: alp"),
+        "status bar must carry the active filter:\n{screen}"
+    );
+    // The filtered list hides beta everywhere on screen.
+    assert!(
+        !screen.contains("beta"),
+        "filtered-out task must not render:\n{screen}"
+    );
+}
