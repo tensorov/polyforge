@@ -7,13 +7,15 @@
 
 use polyforge_core::EvidenceState;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::prelude::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, Pane};
+use crate::app::{App, InputMode, Pane, PendingConfirm};
 use crate::theme;
+use crate::validate::VALIDATOR;
 
 /// Below this width (or [`MIN_ROWS`] rows) the console refuses to render.
 const MIN_COLS: u16 = 80;
@@ -23,6 +25,10 @@ const MIN_ROWS: u16 = 24;
 const WIDE_COLS: u16 = 100;
 /// List pane share of the width in the side-by-side layout.
 const LIST_PANE_PCT: u16 = 40;
+/// Modal popup share of the terminal width.
+const MODAL_WIDTH_PCT: u16 = 60;
+/// Task ids listed inside the bulk confirmation before truncation.
+const BULK_LIST_LIMIT: usize = 10;
 
 /// Render one frame of the console onto `f`.
 ///
@@ -72,6 +78,13 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_detail(f, app, detail_area);
     draw_toasts(f, app, toast_row);
     draw_status_bar(f, app, status_row);
+
+    // Operator modals paint last so they sit on top of every pane.
+    if let Some(pending) = &app.pending_confirm {
+        draw_confirm_modal(f, app, pending);
+    } else if let Some(mode) = &app.input_mode {
+        draw_rationale_input(f, mode);
+    }
 }
 
 /// Full-screen refusal for terminals under 80x24: centered muted text on the
@@ -237,4 +250,92 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     let mut out: String = text.chars().take(keep).collect();
     out.push('~');
     out
+}
+
+/// Confirmation popup for a pending validation action.
+///
+/// The single variant names one task and shows the rationale that will be
+/// recorded (the committed one, or the default wording when none was typed).
+/// The bulk variant lists up to [`BULK_LIST_LIMIT`] task ids with a
+/// `+N more` overflow line. Both share the accent-bordered popup chrome.
+fn draw_confirm_modal(f: &mut Frame, app: &App, pending: &PendingConfirm) {
+    let (title, mut lines) = match pending {
+        PendingConfirm::Single { task_id } => {
+            let rationale = app
+                .pending_rationale
+                .as_deref()
+                .unwrap_or("lazyforge operator validation");
+            (
+                "Confirm validation",
+                vec![
+                    Line::from(format!("task: {task_id}")),
+                    Line::from(format!("validator: {VALIDATOR}")),
+                    Line::from(format!("rationale: {rationale}")),
+                    Line::from("commit/diff copied from the latest Verified entry"),
+                ],
+            )
+        }
+        PendingConfirm::Bulk { tasks } => {
+            let mut bulk_lines = vec![Line::from(format!("tasks: {}", tasks.len()))];
+            for task_id in tasks.iter().take(BULK_LIST_LIMIT) {
+                bulk_lines.push(Line::from(format!("  {task_id}")));
+            }
+            let hidden = tasks.len().saturating_sub(BULK_LIST_LIMIT);
+            if hidden > 0 {
+                bulk_lines.push(Line::from(format!("  +{hidden} more")));
+            }
+            bulk_lines.push(Line::from("rationale: lazyforge bulk validate"));
+            ("Confirm bulk validation", bulk_lines)
+        }
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "[Enter] confirm   [Esc] cancel",
+        Style::default().fg(theme::MUTED),
+    ));
+    render_popup(f, title, lines);
+}
+
+/// Rationale capture popup: the buffer plus a trailing cursor marker.
+fn draw_rationale_input(f: &mut Frame, mode: &InputMode) {
+    let lines = vec![
+        Line::from(format!("{}_", mode.buffer)),
+        Line::from(""),
+        Line::styled(
+            "[Enter] commit   [Esc] cancel",
+            Style::default().fg(theme::MUTED),
+        ),
+    ];
+    render_popup(f, "Rationale", lines);
+}
+
+/// Shared popup chrome: centered rect, clear, rounded block with an accent
+/// border so the modal reads as active against the muted panes behind it.
+fn render_popup(f: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
+    let area = f.area();
+    let height = u16::try_from(lines.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .min(area.height);
+    let popup_area = centered_rect(MODAL_WIDTH_PCT, height, area);
+
+    f.render_widget(Clear, popup_area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(title)
+        .border_style(Style::default().fg(theme::ACCENT));
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(theme::TEXT_DIM).bg(theme::SURFACE));
+    f.render_widget(paragraph, popup_area);
+}
+
+/// Rect centered inside `area` at `width_pct` percent width and `height` rows,
+/// clamped to the area so small terminals never get negative geometry.
+fn centered_rect(width_pct: u16, height: u16, area: Rect) -> Rect {
+    let width = area.width * width_pct / 100;
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width, height)
 }

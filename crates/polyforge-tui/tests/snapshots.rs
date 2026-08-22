@@ -17,6 +17,7 @@ use polyforge_core::ledger::Ledger;
 use polyforge_tui::app::App;
 use polyforge_tui::ui;
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::Terminal;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -61,6 +62,15 @@ fn write_two_task_ledger(path: &Path) {
     ledger.append(v.to_ledger_entry()).unwrap();
     ledger.append(d.to_ledger_entry()).unwrap();
     ledger.append(claim("beta").to_ledger_entry()).unwrap();
+}
+
+/// Seed claim + tool attestation: the task ends `Verified`.
+fn seed_verified(path: &Path, task: &str) {
+    let mut ledger = Ledger::new(path);
+    let c = claim(task);
+    let v = promote(&c, &attestation(task)).unwrap();
+    ledger.append(c.to_ledger_entry()).unwrap();
+    ledger.append(v.to_ledger_entry()).unwrap();
 }
 
 /// Render one frame of `app` at `width` x `height` and flatten the backend
@@ -180,4 +190,80 @@ fn corrupt_fail_closed() {
         !screen.contains("Tasks ["),
         "panes must not render on the error screen:\n{screen}"
     );
+}
+
+#[test]
+fn single_confirm_modal_renders() {
+    let path = tmp_ledger_path("modal-single");
+    seed_verified(&path, "task-v");
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('v'));
+    assert!(
+        app.pending_confirm.is_some(),
+        "'v' must open the confirmation modal"
+    );
+
+    let screen = render_to_string(&app, 100, 30);
+    assert!(
+        screen.contains("Confirm validation"),
+        "modal title missing:\n{screen}"
+    );
+    assert!(screen.contains("task-v"), "task id missing:\n{screen}");
+    assert!(
+        screen.contains("lazyforge-operator"),
+        "validator identity missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("[Enter] confirm"),
+        "modal footer missing:\n{screen}"
+    );
+}
+
+#[test]
+fn bulk_confirm_modal_renders() {
+    let path = tmp_ledger_path("modal-bulk");
+    seed_verified(&path, "alpha");
+    seed_verified(&path, "beta");
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('A'));
+    assert!(
+        app.pending_confirm.is_some(),
+        "'A' must open the bulk modal when Verified tasks exist"
+    );
+
+    let screen = render_to_string(&app, 100, 30);
+    assert!(
+        screen.contains("Confirm bulk validation"),
+        "bulk modal title missing:\n{screen}"
+    );
+    assert!(
+        screen.contains("tasks: 2"),
+        "task count line missing:\n{screen}"
+    );
+    assert!(screen.contains("alpha"), "task alpha missing:\n{screen}");
+    assert!(screen.contains("beta"), "task beta missing:\n{screen}");
+}
+
+#[test]
+fn rationale_input_mode_renders() {
+    let path = tmp_ledger_path("modal-rationale");
+    seed_verified(&path, "task-i");
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('r'));
+    app.handle_key(KeyCode::Char('o'));
+    app.handle_key(KeyCode::Char('k'));
+    assert!(
+        app.input_mode.is_some(),
+        "'r' must enter rationale input mode"
+    );
+
+    let screen = render_to_string(&app, 100, 30);
+    assert!(
+        screen.contains("Rationale"),
+        "input block title missing:\n{screen}"
+    );
+    assert!(screen.contains("ok"), "buffer content missing:\n{screen}");
 }
