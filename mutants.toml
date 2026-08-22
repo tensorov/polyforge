@@ -15,4 +15,9 @@ exclude_re = [
     # identical (see polyforge-core test_gate_latest_claim_no_newer_claim_is_not_stale).
     "replace has_newer_claim ",
     "in has_newer_claim$",
+    # Equivalent by seq uniqueness in latest_state_per_task: entries have
+    # unique seq, so > and >= select the identical newest entry
+    # (polyforge-core test_latest_state_per_task_* family pins final states).
+    "replace latest_state_per_task ",
+    "in latest_state_per_task$",
 ]
