@@ -8,6 +8,14 @@
 //!                           append an evidence entry to the ledger
 //!   pf ledger tail          print the last entry's hash (ChainState.head_hash)
 //!   pf ledger summary       print per-task counts (latest ledger state per task)
+//!   pf ledger export --otel [--out <path>]
+//!                           export the whole ledger as OTLP/JSON log records
+//!                           (default stdout; --out writes the same bytes to a
+//!                           file). Fail-closed: a corrupt chain is an error.
+//!                           Timestamps are converted only when unambiguous:
+//!                           all-digits ts is epoch millis, RFC3339 strict
+//!                           subset is parsed by hand; anything else keeps its
+//!                           raw string in attributes and omits time fields.
 //!   pf gate <task_id> [--required verified,validated] [--commit <sha>] [--diff <hash>]
 //!                           run evaluate_complete; on PASS write a reproducible bundle
 //!   pf coverage-check --report <llvm-cov.json>
@@ -364,6 +372,203 @@ fn cmd_ledger_summary() -> Result<(), String> {
     Ok(())
 }
 
+/// Convert a ledger `ts` string into epoch nanoseconds when unambiguous.
+///
+/// All-digits values are epoch milliseconds; RFC3339 strict-subset strings
+/// are parsed by hand; anything else yields None and the caller omits both
+/// OTLP time fields entirely.
+fn ts_to_nanos(ts: &str) -> Option<String> {
+    if ts.bytes().all(|b| b.is_ascii_digit()) {
+        let millis = ts.parse::<u64>().ok()?;
+        millis.checked_mul(1_000_000).map(|n| n.to_string())
+    } else {
+        parse_rfc3339_to_nanos(ts)
+    }
+}
+
+/// Parse a strict RFC3339 subset by hand (no chrono/time dependency):
+/// `YYYY-MM-DD[T|t| ]HH:MM:SS[.digits](Z | z | +HH:MM | -HH:MM)`.
+///
+/// Leap seconds (`:60`) are rejected; fractional digits beyond 9 are
+/// truncated, shorter fractions are zero-padded on the right. Returns epoch
+/// nanoseconds as a decimal String, or None when unparseable.
+fn parse_rfc3339_to_nanos(s: &str) -> Option<String> {
+    fn num(b: &[u8], start: usize, end: usize) -> Option<u32> {
+        if end > b.len() || start > end {
+            return None;
+        }
+        let mut v: u32 = 0;
+        for &c in &b[start..end] {
+            if !c.is_ascii_digit() {
+                return None;
+            }
+            v = v * 10 + u32::from(c - b'0');
+        }
+        Some(v)
+    }
+
+    let b = s.as_bytes();
+    if b.len() < 19 {
+        return None;
+    }
+    if b[4] != b'-' || b[7] != b'-' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    if b[10] != b'T' && b[10] != b't' && b[10] != b' ' {
+        return None;
+    }
+    let year = i64::from(num(b, 0, 4)?);
+    let month = num(b, 5, 7)?;
+    let day = num(b, 8, 10)?;
+    let hour = i64::from(num(b, 11, 13)?);
+    let minute = i64::from(num(b, 14, 16)?);
+    let second = num(b, 17, 19)?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+
+    let mut pos = 19;
+    let mut nanos: u32 = 0;
+    if pos < b.len() && b[pos] == b'.' {
+        pos += 1;
+        let frac_start = pos;
+        while pos < b.len() && b[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        let ndigits = pos - frac_start;
+        if ndigits == 0 {
+            return None;
+        }
+        let take = ndigits.min(9);
+        let mut scaled: u32 = 0;
+        for &c in &b[frac_start..frac_start + take] {
+            scaled = scaled * 10 + u32::from(c - b'0');
+        }
+        nanos = scaled * 10u32.pow(9 - take as u32);
+    }
+
+    // Zone offset: Z | z | +HH:MM | -HH:MM (nothing else).
+    let offset_minutes: i64;
+    if pos < b.len() && (b[pos] == b'Z' || b[pos] == b'z') {
+        pos += 1;
+        offset_minutes = 0;
+    } else if pos + 6 <= b.len() && (b[pos] == b'+' || b[pos] == b'-') && b[pos + 3] == b':' {
+        let sign: i64 = if b[pos] == b'+' { 1 } else { -1 };
+        let oh = i64::from(num(b, pos + 1, pos + 3)?);
+        let om = i64::from(num(b, pos + 4, pos + 6)?);
+        if oh > 23 || om > 59 {
+            return None;
+        }
+        pos += 6;
+        offset_minutes = sign * (oh * 60 + om);
+    } else {
+        return None;
+    }
+    if pos != b.len() {
+        return None;
+    }
+
+    let days = civil_to_days(year, month, day);
+    let secs = days * 86_400 + hour * 3_600 + minute * 60 + i64::from(second) - offset_minutes * 60;
+    let total = secs
+        .checked_mul(1_000_000_000)?
+        .checked_add(i64::from(nanos))?;
+    Some(total.to_string())
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian civil date
+/// (Howard Hinnant's days_from_civil algorithm; valid for any year).
+fn civil_to_days(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (i64::from(m) + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Build one OTLP/JSON log record for a ledger entry. `timeUnixNano` /
+/// `observedTimeUnixNano` carry the same converted value and are omitted
+/// entirely when the raw `ts` is unparseable; the raw `ts` always travels
+/// verbatim in attributes so no information is lost either way.
+fn otlp_record_for(e: &LedgerEntry) -> serde_json::Value {
+    let attr = |key: &str, value: String| serde_json::json!({ "key": key, "value": { "stringValue": value } });
+    let payload_str = |key: &str| {
+        e.payload
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut rec = serde_json::Map::new();
+    if let Some(nanos) = ts_to_nanos(&e.ts) {
+        rec.insert(
+            "timeUnixNano".to_string(),
+            serde_json::Value::String(nanos.clone()),
+        );
+        rec.insert(
+            "observedTimeUnixNano".to_string(),
+            serde_json::Value::String(nanos),
+        );
+    }
+    rec.insert(
+        "attributes".to_string(),
+        serde_json::json!([
+            attr("task_id", payload_str("task_id")),
+            attr("kind", e.kind.clone()),
+            attr("state", payload_str("state")),
+            attr("commit_sha", payload_str("commit_sha")),
+            attr("diff_hash", payload_str("diff_hash")),
+            attr("ts", e.ts.clone()),
+            attr("hash", e.hash.clone()),
+        ]),
+    );
+    serde_json::Value::Object(rec)
+}
+
+fn build_otlp_export(entries: &[LedgerEntry]) -> serde_json::Value {
+    let records: Vec<serde_json::Value> = entries.iter().map(otlp_record_for).collect();
+    serde_json::json!({
+        "resourceLogs": [{
+            "resource": {
+                "attributes": [
+                    { "key": "service.name", "value": { "stringValue": "polyforge" } }
+                ]
+            },
+            "scopeLogs": [{
+                "logRecords": records
+            }]
+        }]
+    })
+}
+
+/// Fail-closed OTLP/JSON export of the whole ledger.
+fn cmd_ledger_export_otel(out_path: Option<&str>) -> Result<(), String> {
+    let ledger = Ledger::new(ledger_path());
+    ledger
+        .verify_chain()
+        .map_err(|e| format!("verify chain: {e:?}"))?;
+    let entries = ledger
+        .iter_entries()
+        .map_err(|e| format!("iter entries: {e:?}"))?;
+    let doc = build_otlp_export(&entries);
+    let bytes = serde_json::to_vec(&doc).map_err(|e| format!("serialize export: {e}"))?;
+    match out_path {
+        Some(path) => fs::write(path, &bytes).map_err(|e| format!("write export {path}: {e}"))?,
+        None => {
+            use std::io::Write as _;
+            std::io::stdout()
+                .write_all(&bytes)
+                .map_err(|e| format!("write stdout: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn parse_required(spec: &str) -> Result<Vec<EvidenceState>, String> {
     let mut out = Vec::new();
     for part in spec.split(',') {
@@ -686,7 +891,7 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
         }
         "ledger" => {
             if args.len() < 2 {
-                return Err("usage: pf ledger <tail|summary>".to_string());
+                return Err("usage: pf ledger <tail|summary|export>".to_string());
             }
             match args[1].as_str() {
                 "tail" => {
@@ -695,6 +900,30 @@ fn dispatch(args: &[String]) -> Result<ExitCode, String> {
                 }
                 "summary" => {
                     cmd_ledger_summary()?;
+                    Ok(ExitCode::SUCCESS)
+                }
+                "export" => {
+                    if args.len() < 3 || args[2] != "--otel" {
+                        return Err("usage: pf ledger export --otel [--out <path>]".to_string());
+                    }
+                    let mut out = None;
+                    let mut i = 3;
+                    while i < args.len() {
+                        match args[i].as_str() {
+                            "--out" => {
+                                out = Some(
+                                    args.get(i + 1)
+                                        .ok_or_else(|| "--out requires a value".to_string())?
+                                        .clone(),
+                                );
+                                i += 2;
+                            }
+                            other => {
+                                return Err(format!("unknown flag for ledger export: {other}"))
+                            }
+                        }
+                    }
+                    cmd_ledger_export_otel(out.as_deref())?;
                     Ok(ExitCode::SUCCESS)
                 }
                 other => Err(format!("unknown ledger subcommand: {other}")),
@@ -764,6 +993,7 @@ fn print_usage() {
          \x20              [--experiment <id>] [--model <fp>] [--run <id>] [--budget <amt>] [--metadata <json>]\n\
          \x20 pf ledger tail\n\
          \x20 pf ledger summary\n\
+         \x20 pf ledger export --otel [--out <path>]\n\
          \x20 pf gate <task_id> [--required verified,validated] [--commit <sha>] [--diff <hash>]\n\
          \x20 pf coverage-check --report <llvm-cov.json>\n\
          \n\
@@ -894,5 +1124,146 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    use super::{build_otlp_export, parse_rfc3339_to_nanos, ts_to_nanos, LedgerEntry};
+
+    #[test]
+    fn test_parse_rfc3339_table() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("1970-01-01T00:00:00Z", Some("0")),
+            ("2026-08-22T11:38:29Z", Some("1787398709000000000")),
+            ("2026-08-22T13:38:29+02:00", Some("1787398709000000000")),
+            ("2026-08-22t11:38:29z", Some("1787398709000000000")),
+            ("2026-08-22 11:38:29Z", Some("1787398709000000000")),
+            (
+                "2026-08-22T11:38:29.1234567891Z",
+                Some("1787398709123456789"),
+            ),
+            ("2026-08-22T11:38:29.5Z", Some("1787398709500000000")),
+            ("2026-08-22T11:38:60Z", None),
+            ("not-a-timestamp", None),
+            ("2026-13-22T11:38:29Z", None),
+            ("2026-08-32T11:38:29Z", None),
+            ("2026-08-22T11:38:29", None),
+            ("2026-08-22T11:38:29Zx", None),
+            ("2026-08-22T24:00:00Z", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                parse_rfc3339_to_nanos(input).as_deref(),
+                *expected,
+                "parse_rfc3339_to_nanos({input:?}) mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ts_to_nanos_table() {
+        assert_eq!(
+            ts_to_nanos("1755849509000").as_deref(),
+            Some("1755849509000000000"),
+            "all-digits ts is epoch millis"
+        );
+        assert_eq!(ts_to_nanos("99999999999999999999999"), None);
+        assert_eq!(ts_to_nanos("garbage!!"), None);
+        assert_eq!(ts_to_nanos(""), None);
+    }
+
+    #[test]
+    fn test_build_otlp_export_shape_and_ts_policy() {
+        let mk = |kind: &str, task: &str, state: &str, ts: &str| LedgerEntry {
+            seq: 0,
+            prev_hash: String::new(),
+            kind: kind.to_string(),
+            payload: serde_json::json!({
+                "task_id": task,
+                "state": state,
+                "commit_sha": "c",
+                "diff_hash": "d"
+            }),
+            tool_version: String::new(),
+            env_fingerprint: String::new(),
+            ts: ts.to_string(),
+            hash: "ab".repeat(32),
+            hash_version: 2,
+        };
+        let entries = vec![
+            mk("model_claim", "A", "ModelClaimed", "1755849509000"),
+            mk("validation", "B", "Validated", "weird-ts"),
+        ];
+        let doc = build_otlp_export(&entries);
+
+        let rl = doc
+            .get("resourceLogs")
+            .and_then(|v| v.as_array())
+            .expect("resourceLogs array");
+        assert_eq!(rl.len(), 1);
+        assert_eq!(
+            rl[0]
+                .pointer("/resource/attributes/0/key")
+                .and_then(|v| v.as_str()),
+            Some("service.name")
+        );
+        assert_eq!(
+            rl[0]
+                .pointer("/resource/attributes/0/value/stringValue")
+                .and_then(|v| v.as_str()),
+            Some("polyforge")
+        );
+
+        let recs = rl[0]
+            .pointer("/scopeLogs/0/logRecords")
+            .and_then(|v| v.as_array())
+            .expect("logRecords array");
+        assert_eq!(recs.len(), 2);
+
+        assert_eq!(
+            recs[0].get("timeUnixNano").and_then(|v| v.as_str()),
+            Some("1755849509000000000")
+        );
+        assert_eq!(
+            recs[0].get("observedTimeUnixNano").and_then(|v| v.as_str()),
+            Some("1755849509000000000")
+        );
+
+        assert!(recs[1].get("timeUnixNano").is_none());
+        assert!(recs[1].get("observedTimeUnixNano").is_none());
+
+        let attrs = recs[1]
+            .get("attributes")
+            .and_then(|v| v.as_array())
+            .expect("attributes array");
+        let keys: Vec<_> = attrs
+            .iter()
+            .filter_map(|a| a.get("key").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "task_id",
+                "kind",
+                "state",
+                "commit_sha",
+                "diff_hash",
+                "ts",
+                "hash"
+            ]
+        );
+        let find = |k: &str| {
+            attrs
+                .iter()
+                .find(|a| a.get("key").and_then(|v| v.as_str()) == Some(k))
+                .and_then(|a| a.pointer("/value/stringValue"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        };
+        assert_eq!(find("task_id").as_deref(), Some("B"));
+        assert_eq!(find("kind").as_deref(), Some("validation"));
+        assert_eq!(find("state").as_deref(), Some("Validated"));
+        assert_eq!(find("commit_sha").as_deref(), Some("c"));
+        assert_eq!(find("diff_hash").as_deref(), Some("d"));
+        assert_eq!(find("ts").as_deref(), Some("weird-ts"));
+        assert_eq!(find("hash").as_deref().map(str::len), Some(64));
     }
 }
