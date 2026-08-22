@@ -11,8 +11,8 @@ keywords = ["mcp", "model-context", "server", "stdio", "ledger"]
 categories = ["development-tools", "web-programming"]
 
 [dependencies]
-polyforge-core = { path = "../polyforge-core", version = "0.2.0" }
-polyforge-toolrunner = { path = "../polyforge-toolrunner", version = "0.2.0" }
+polyforge-core = { path = "../polyforge-core", version = "0.3.0" }
+polyforge-toolrunner = { path = "../polyforge-toolrunner", version = "0.3.0" }
 rmcp = { version = "3", features = ["transport-io", "client"] }
 schemars = { version = "1", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

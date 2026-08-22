@@ -5,11 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "LazyForge - terminal operator console for the PolyForge evidence ledger"
+keywords = ["mcp", "evidence", "ledger", "agents"]
 rust-version = "1.88"
 
 [dependencies]
 ratatui = "=0.30.2"
-polyforge-core = { path = "../polyforge-core", version = "0.2.0" }
+polyforge-core = { path = "../polyforge-core", version = "0.3.0" }
 
 [[bin]]
 name = "lazyforge"

@@ -69,7 +69,7 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     env:
-      MUTANT_PACKAGES: "polyforge-core polyforge-toolrunner polyforge-mcp polyforge-cli"
+      MUTANT_PACKAGES: "polyforge-core polyforge-toolrunner polyforge-mcp polyforge-cli polyforge-tui"
     steps:
       - uses: actions/checkout@v4
         with:

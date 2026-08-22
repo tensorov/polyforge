@@ -1057,7 +1057,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "polyforge-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "polyforge-core",
  "serde_json",
@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "polyforge-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fs2",
  "serde",
@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "polyforge-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "polyforge-core",
@@ -1091,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "polyforge-toolrunner"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "polyforge-core",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "polyforge-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "polyforge-core",
  "ratatui",

@@ -15,7 +15,7 @@ name = "polyforge_toolrunner"
 path = "src/lib.rs"
 
 [dependencies]
-polyforge-core = { path = "../polyforge-core", version = "0.2.0" }
+polyforge-core = { path = "../polyforge-core", version = "0.3.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "=0.10.9"
