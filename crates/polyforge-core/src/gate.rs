@@ -17,6 +17,7 @@
 //!   still-missing required states, and the chain tail hash so the caller can
 //!   pin the verdict to the exact ledger head it was computed against.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::evidence::EvidenceState;
@@ -293,6 +294,45 @@ pub fn evaluate_complete_scoped(
         missing,
         chain_tail_hash: chain.head_hash,
     })
+}
+
+/// Latest evidence state per task across the whole ledger.
+///
+/// The chain is verified first; any integrity failure short-circuits to
+/// [`GateError::LedgerIntegrity`] so a corrupt ledger never yields partial
+/// data. Each task maps to the state of its highest-seq entry; all four
+/// states, including `ModelClaimed` and `Refuted`, are reported. The
+/// `BTreeMap` keeps the ordering deterministic.
+pub fn latest_state_per_task(
+    ledger: &Ledger,
+) -> Result<BTreeMap<String, EvidenceState>, GateError> {
+    if let Err(e) = ledger.verify_chain() {
+        // An empty chain is the legitimate empty-ledger case (no tasks, no
+        // corruption); every other failure stays fail-closed.
+        if !matches!(e, LedgerError::EmptyChain) {
+            return Err(GateError::from(e));
+        }
+        return Ok(BTreeMap::new());
+    }
+    let entries = ledger.iter_entries().map_err(GateError::from)?;
+
+    let mut latest: BTreeMap<&str, (u64, EvidenceState)> = BTreeMap::new();
+    for entry in &entries {
+        let (Some(state), Some(task_id)) = (state_of(entry), task_of(entry)) else {
+            continue;
+        };
+        let is_newer = latest
+            .get(task_id)
+            .is_none_or(|&(top_seq, _)| entry.seq > top_seq);
+        if is_newer {
+            latest.insert(task_id, (entry.seq, state));
+        }
+    }
+
+    Ok(latest
+        .into_iter()
+        .map(|(task_id, (_, state))| (task_id.to_string(), state))
+        .collect())
 }
 
 /// Extract the tri-state verdict from a ledger entry's payload, if present.
@@ -858,5 +898,68 @@ mod tests {
         assert!(eval.passed, "no newer claim means the verdict is not stale");
         assert!(eval.missing.is_empty());
         assert_eq!(eval.counts.verified, 1);
+    }
+
+    #[test]
+    fn test_latest_state_per_task_empty_ledger_is_empty_map() {
+        let path = tmp_path("lspt-empty");
+        let ledger = Ledger::new(&path);
+        let map = latest_state_per_task(&ledger).unwrap();
+        assert!(map.is_empty(), "empty ledger must yield an empty map");
+    }
+
+    #[test]
+    fn test_latest_state_per_task_maps_each_task_to_its_final_state() {
+        // Task A: claim + attestation + validation -> Validated.
+        // Task B: bare claim -> ModelClaimed.
+        let path = tmp_path("lspt-two-tasks");
+        let mut ledger = Ledger::new(&path);
+        let ca = claim("TA");
+        let va = promote(&ca, &attestation("TA")).unwrap();
+        let da = promote(&va, &validation("TA")).unwrap();
+        ledger.append(ca.to_ledger_entry()).unwrap();
+        ledger.append(va.to_ledger_entry()).unwrap();
+        ledger.append(da.to_ledger_entry()).unwrap();
+        ledger.append(claim("TB").to_ledger_entry()).unwrap();
+
+        let map = latest_state_per_task(&ledger).unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("TA"), Some(&EvidenceState::Validated));
+        assert_eq!(map.get("TB"), Some(&EvidenceState::ModelClaimed));
+    }
+
+    #[test]
+    fn test_latest_state_per_task_refuted_is_present() {
+        // claim then discrepancy -> Refuted must appear in the map.
+        let path = tmp_path("lspt-refuted");
+        let mut ledger = Ledger::new(&path);
+        let c = claim("TR");
+        let d = promote(&c, &discrepancy("TR", 1)).unwrap();
+        ledger.append(c.to_ledger_entry()).unwrap();
+        ledger.append(d.to_ledger_entry()).unwrap();
+
+        let map = latest_state_per_task(&ledger).unwrap();
+        assert_eq!(map.get("TR"), Some(&EvidenceState::Refuted));
+    }
+
+    #[test]
+    fn test_latest_state_per_task_corrupt_ledger_fails_closed() {
+        let path = tmp_path("lspt-corrupt");
+        let mut ledger = Ledger::new(&path);
+        ledger.append(claim("TC").to_ledger_entry()).unwrap();
+        ledger.verify_chain().unwrap();
+
+        // Tamper: rewrite the kind value of the entry (keeps JSON valid,
+        // breaks the hash chain).
+        let content = std::fs::read_to_string(&path).unwrap();
+        let tampered = content.replacen("ModelClaim", "ModelClaimZ", 1);
+        assert_ne!(content, tampered, "tamper must change the file bytes");
+        std::fs::write(&path, tampered).unwrap();
+
+        let err = latest_state_per_task(&ledger).unwrap_err();
+        assert!(
+            matches!(err, GateError::LedgerIntegrity { .. }),
+            "corrupt ledger must surface LedgerIntegrity, got {err:?}"
+        );
     }
 }

@@ -5,6 +5,7 @@ members = [
     "crates/polyforge-toolrunner",
     "crates/polyforge-mcp",
     "crates/polyforge-cli",
+    "crates/polyforge-tui",
 ]
 
 [workspace.package]
