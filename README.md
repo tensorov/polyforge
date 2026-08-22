@@ -7,6 +7,7 @@
 [![polyforge-toolrunner](https://img.shields.io/crates/v/polyforge-toolrunner?label=polyforge-toolrunner)](https://crates.io/crates/polyforge-toolrunner)
 [![polyforge-mcp](https://img.shields.io/crates/v/polyforge-mcp?label=polyforge-mcp)](https://crates.io/crates/polyforge-mcp)
 [![polyforge-cli](https://img.shields.io/crates/v/polyforge-cli?label=polyforge-cli)](https://crates.io/crates/polyforge-cli)
+[![polyforge-tui](https://img.shields.io/crates/v/polyforge-tui?label=polyforge-tui)](https://crates.io/crates/polyforge-tui)
 
 ## Demo
 
@@ -17,7 +18,7 @@ record claims, allowlisted tools attest them, and operators gate on the resultin
 
 ## Proof
 
-Everything in this README is covered by the workspace test suite (170 tests across the four
+Everything in this README is covered by the workspace test suite (269 tests across the five
 crates) and by the CLI/MCP smoke and end-to-end harnesses.
 
 Run it yourself: `cargo build --workspace && cargo test --workspace` (see [Build from source](#build-from-source)).
@@ -28,7 +29,7 @@ Run it yourself: `cargo build --workspace && cargo test --workspace` (see [Build
 
 ## Architecture
 
-Workspace of four crates (edition 2021, rust-version 1.85, Rust toolchain 1.95.0):
+Workspace of five crates (edition 2021, rust-version 1.85, Rust toolchain 1.95.0):
 
 | Crate                   | Crates.io                                                                                        | Responsibility                                                                                   |
 | ----------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
@@ -36,13 +37,21 @@ Workspace of four crates (edition 2021, rust-version 1.85, Rust toolchain 1.95.0
 | `polyforge-toolrunner`  | [![crates.io](https://img.shields.io/badge/crates.io-0.2.0-blue)](https://crates.io/crates/polyforge-toolrunner) | Allowlisted tool runner: only allowlisted binaries (cargo/rustc/gcc), typed arguments, no shell, per-command environment fingerprint (Nix store-path digest + devbox.lock sha256 folded in when present, Cargo.lock sha256 always, plus the values of key build env vars such as CFLAGS/CXXFLAGS/LDFLAGS/RUSTDOCFLAGS when set). |
 | `polyforge-mcp`         | [![crates.io](https://img.shields.io/badge/crates.io-0.2.0-blue)](https://crates.io/crates/polyforge-mcp) | Model Context Protocol server (rmcp): the interface models use to append claims and query gates. |
 | `polyforge-cli`         | [![crates.io](https://img.shields.io/badge/crates.io-0.2.0-blue)](https://crates.io/crates/polyforge-cli) | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.           |
+| `polyforge-tui`         | [![crates.io](https://img.shields.io/badge/crates.io-0.3.0-blue)](https://crates.io/crates/polyforge-tui) | LazyForge terminal operator console: browse tasks, validate, bulk-validate over the evidence ledger. |
 
-All four crates are published to [crates.io](https://crates.io): `v0.2.0` of
+All five crates are published to [crates.io](https://crates.io): `v0.2.0` of
 `polyforge-core`, `polyforge-toolrunner`, `polyforge-mcp`, and `polyforge-cli` (install the
-binaries with `cargo install polyforge-cli polyforge-mcp`).
+binaries with `cargo install polyforge-cli polyforge-mcp`; `cargo install polyforge-tui`
+adds the LazyForge operator console, whose binary is named `lazyforge`).
 
 The CLI binary is named `polyforge-cli` (the crate name). All examples in this README use
 it directly; `alias pf=polyforge-cli` if you prefer the short name.
+
+### Operator console and guides
+
+- [LazyForge user guide](docs/lazyforge.md)
+- [Verified integration guides](docs/integrations/) (OpenCode, Claude Code, Codex)
+- [Servers-directory submission kit](docs/mcp-servers-pr-kit/)
 
 ## Evidence lifecycle
 
@@ -85,8 +94,9 @@ command string.
 ## Build from source
 
 The workspace requires a Rust toolchain of at least version 1.85 (edition 2021; developed
-against toolchain 1.95.0). Building the workspace in release mode produces the
-`polyforge-cli` binary:
+against toolchain 1.95.0). The polyforge-tui crate additionally requires Rust 1.88 or newer
+(ratatui 0.30); every other crate builds on Rust 1.85. Building the workspace in release mode
+produces the `polyforge-cli` binary:
 
 ```sh
 cargo build --release
@@ -106,7 +116,8 @@ The v2 allowlist attests Python and JS/TS tools: `pytest`, `ruff check`,
 (`--noEmit`), `eslint`, and `biome check`.
 
 Install stays cargo-based: `cargo install polyforge-cli polyforge-mcp` requires a Rust
-toolchain.
+toolchain; `cargo install polyforge-tui` adds the LazyForge operator console (binary
+`lazyforge`).
 
 Tools resolve from the PATH of the polyforge process; activating your project's venv before
 running attestations is operator duty.
