@@ -3,17 +3,19 @@
 //! Rendering lives in [`polyforge_tui::ui`], state transitions in
 //! [`polyforge_tui::app`]. This file only wires crossterm input to the app
 //! and guarantees terminal restoration on every exit path, including errors
-//! mid-loop.
+//! mid-loop and panics anywhere in the process.
 
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use polyforge_tui::app::App;
+use polyforge_tui::app::{App, MouseDirection};
 use polyforge_tui::ui;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, MouseEventKind,
+};
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -24,6 +26,13 @@ use ratatui::Terminal;
 const POLL_TIMEOUT: Duration = Duration::from_millis(200);
 
 fn main() -> ExitCode {
+    // Installed before any terminal setup so a panic mid-setup or mid-loop
+    // still hands the terminal back instead of leaving the shell raw.
+    std::panic::set_hook(Box::new(|info| {
+        restore_terminal();
+        eprintln!("{info}");
+    }));
+
     let flag_path = parse_ledger_flag(std::env::args().skip(1));
     match run(flag_path) {
         Ok(()) => ExitCode::SUCCESS,
@@ -55,28 +64,38 @@ fn run(flag_path: Option<PathBuf>) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
+    stdout.execute(EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     // The loop body runs to completion or returns an error; either way the
-    // terminal is restored before the result propagates.
+    // terminal is restored before the result propagates. The panic hook
+    // covers the remaining exit path.
     let outcome = event_loop(&mut terminal, &mut app);
-    restore(&mut terminal);
+    restore_terminal();
     outcome
 }
 
-/// Drive one frame per poll cycle: key events mutate state, poll timeouts
-/// advance the toast clock, every iteration repaints.
+/// Drive one frame per poll cycle: key and mouse events mutate state, poll
+/// timeouts advance the toast clock, every iteration repaints.
 fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> io::Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| ui::draw(frame, app))?;
         if event::poll(POLL_TIMEOUT)? {
-            if let Event::Key(key) = event::read()? {
-                // Release events would double-handle keys on platforms that
-                // emit them; only presses drive transitions.
-                if key.kind == KeyEventKind::Press {
-                    app.handle_key(key.code);
-                }
+            match event::read()? {
+                Event::Key(key) => app.handle_key_event(key),
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        app.handle_mouse_scroll(MouseDirection::Down, app.pane);
+                    }
+                    MouseEventKind::ScrollUp => {
+                        app.handle_mouse_scroll(MouseDirection::Up, app.pane);
+                    }
+                    _ => {}
+                },
+                // Resize repaints on the next draw; focus flips and
+                // bracketed paste carry no state this console tracks.
+                Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
             }
         } else {
             // Poll timeout: advance the virtual toast clock, drop expired.
@@ -87,8 +106,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) 
 }
 
 /// Restore the terminal to cooked mode on ALL exit paths.
-fn restore(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+///
+/// Idempotent: duplicate calls (clean exit plus the panic hook) degrade to
+/// ignored errors instead of failing fatally.
+fn restore_terminal() {
     let _ = disable_raw_mode();
+    let _ = io::stdout().execute(DisableMouseCapture);
     let _ = io::stdout().execute(LeaveAlternateScreen);
-    let _ = terminal.show_cursor();
 }

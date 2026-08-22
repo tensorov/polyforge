@@ -209,7 +209,18 @@ fn draw_detail(f: &mut Frame, app: &App, area: ratatui::prelude::Rect) {
     };
 
     let paragraph = Paragraph::new(body).block(block).wrap(Wrap { trim: false });
-    f.render_widget(paragraph, area);
+    // Scroll only the real entry listing; hint bodies stay pinned to the
+    // top. The offset is clamped against the content length so a shrunken
+    // ledger cannot scroll the pane past its last line.
+    let rendered = if app.pane == Pane::Detail && !app.entries_of_selected.is_empty() {
+        let max_offset = app.entries_of_selected.len().saturating_sub(1);
+        let offset = app.detail_offset.min(max_offset);
+        let row = u16::try_from(offset).unwrap_or(u16::MAX);
+        paragraph.scroll((row, 0))
+    } else {
+        paragraph
+    };
+    f.render_widget(rendered, area);
 }
 
 /// Muted single-line hint used inside empty panes.

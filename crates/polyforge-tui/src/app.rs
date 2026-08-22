@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use polyforge_core::gate::latest_state_per_task;
 use polyforge_core::ledger::{Ledger, LedgerError};
 use polyforge_core::{EvidenceState, GateError};
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::toast::Toast;
 use crate::validate::{validate_bulk, validate_single};
@@ -27,6 +27,14 @@ const DEFAULT_LEDGER: &str = ".pf/ledger.jsonl";
 pub enum Pane {
     List,
     Detail,
+}
+
+/// Wheel direction for [`App::handle_mouse_scroll`]. A local enum keeps the
+/// app state machine free of crossterm types beyond the key router.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseDirection {
+    Up,
+    Down,
 }
 
 /// A validation action awaiting operator confirmation.
@@ -87,6 +95,9 @@ pub struct App {
     pub show_help: bool,
     /// Chain tail hash from the last ledger read (empty when unreadable).
     pub tail_hash: String,
+    /// Scroll position of the detail pane content; list scrolling moves
+    /// `selected` instead.
+    pub detail_offset: usize,
 }
 
 impl std::fmt::Debug for App {
@@ -109,6 +120,7 @@ impl std::fmt::Debug for App {
             .field("filter", &self.filter)
             .field("show_help", &self.show_help)
             .field("tail_hash", &self.tail_hash)
+            .field("detail_offset", &self.detail_offset)
             .finish()
     }
 }
@@ -144,6 +156,7 @@ impl App {
             filter: None,
             show_help: false,
             tail_hash: read_tail_hash(&ledger),
+            detail_offset: 0,
         };
         match latest_state_per_task(&ledger) {
             Ok(tasks) => App { tasks, ..base },
@@ -208,13 +221,37 @@ impl App {
         }
     }
 
-    /// Handle a key press through the router.
+    /// Handle a bare key code through the router.
     ///
-    /// Priority: confirmation modal > input mode > help overlay > normal
-    /// navigation. While a modal or input mode owns focus, movement keys do
-    /// not leak through; while the help overlay is open only `?` (close) and
-    /// `q` (quit) are honored.
+    /// Thin wrapper over [`App::handle_key_event`] with empty modifiers, kept
+    /// so existing callers and tests keep compiling.
     pub fn handle_key(&mut self, key: KeyCode) {
+        self.handle_key_event(KeyEvent::new(key, KeyModifiers::empty()));
+    }
+
+    /// Handle a full key event: press-only filtering plus the Ctrl-C quit
+    /// shortcut, then the same router as [`App::handle_key`].
+    ///
+    /// Priority: Ctrl-C > confirmation modal > input mode > help overlay >
+    /// normal navigation. Ctrl-C quits from the normal view and through the
+    /// help overlay; while a modal or input mode owns focus their handlers
+    /// keep the keystroke.
+    pub fn handle_key_event(&mut self, key: KeyEvent) {
+        // Release events would double-handle keys on platforms that emit
+        // them; only presses drive transitions.
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
+        let ctrl_c =
+            key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl_c && self.pending_confirm.is_none() && self.input_mode.is_none() {
+            self.should_quit = true;
+            return;
+        }
+        self.route_key(key.code);
+    }
+
+    fn route_key(&mut self, key: KeyCode) {
         if self.pending_confirm.is_some() {
             self.handle_modal_key(key);
         } else if self.input_mode.is_some() {
@@ -383,6 +420,31 @@ impl App {
         }
         self.reload_tasks();
         self.refresh_detail();
+    }
+
+    /// Handle a mouse wheel scroll over `pane`.
+    ///
+    /// List scrolling moves the selection exactly like the arrow keys;
+    /// detail scrolling moves [`App::detail_offset`] three rows per notch,
+    /// saturating at zero.
+    pub fn handle_mouse_scroll(&mut self, direction: MouseDirection, pane: Pane) {
+        match (pane, direction) {
+            (Pane::List, MouseDirection::Down) => self.route_key(KeyCode::Down),
+            (Pane::List, MouseDirection::Up) => self.route_key(KeyCode::Up),
+            (Pane::Detail, MouseDirection::Down) => {
+                self.detail_offset = self.detail_offset.saturating_add(3);
+            }
+            (Pane::Detail, MouseDirection::Up) => {
+                self.detail_offset = self.detail_offset.saturating_sub(3);
+            }
+        }
+    }
+
+    /// Bound [`App::detail_offset`] to a content length so a shrunken
+    /// ledger cannot leave the pane scrolled past its last line. Mirrors
+    /// the render-time clamp in `ui::draw_detail`.
+    pub fn clamp_offsets(&mut self, detail_len: usize) {
+        self.detail_offset = self.detail_offset.min(detail_len.saturating_sub(1));
     }
 
     /// Push a toast with the standard 30-tick lifetime.
@@ -873,5 +935,98 @@ mod tests {
 
         app.handle_key(KeyCode::Char('?'));
         assert!(!app.show_help, "'?' closes the overlay again");
+    }
+
+    #[test]
+    fn mouse_scroll_on_list_moves_selection_like_arrow_keys() {
+        let path = tmp_ledger_path("mouse-list");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_mouse_scroll(MouseDirection::Down, Pane::List);
+        assert_eq!(app.selected_task_id(), Some("task-b"));
+
+        app.handle_mouse_scroll(MouseDirection::Down, Pane::List);
+        assert_eq!(app.selected_task_id(), Some("task-b"), "clamped at last");
+
+        app.handle_mouse_scroll(MouseDirection::Up, Pane::List);
+        assert_eq!(app.selected_task_id(), Some("task-a"));
+
+        app.handle_mouse_scroll(MouseDirection::Up, Pane::List);
+        assert_eq!(app.selected_task_id(), Some("task-a"), "clamped at first");
+    }
+
+    #[test]
+    fn mouse_scroll_on_detail_offsets_by_three_and_saturates_at_zero() {
+        let path = tmp_ledger_path("mouse-detail");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_mouse_scroll(MouseDirection::Up, Pane::Detail);
+        assert_eq!(app.detail_offset, 0, "saturates at zero");
+
+        app.handle_mouse_scroll(MouseDirection::Down, Pane::Detail);
+        assert_eq!(app.detail_offset, 3);
+        app.handle_mouse_scroll(MouseDirection::Down, Pane::Detail);
+        assert_eq!(app.detail_offset, 6);
+
+        app.handle_mouse_scroll(MouseDirection::Up, Pane::Detail);
+        assert_eq!(app.detail_offset, 3);
+    }
+
+    #[test]
+    fn clamp_offsets_bounds_detail_offset_to_content_length() {
+        let path = tmp_ledger_path("clamp-offsets");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.detail_offset = 50;
+        app.clamp_offsets(3);
+        assert_eq!(app.detail_offset, 2);
+
+        app.clamp_offsets(0);
+        assert_eq!(app.detail_offset, 0, "empty content forces offset zero");
+    }
+
+    #[test]
+    fn ctrl_c_quits_in_normal_state_but_plain_c_does_not() {
+        let path = tmp_ledger_path("ctrl-c-normal");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::empty()));
+        assert!(!app.should_quit, "plain 'c' must not quit");
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_while_help_overlay_is_open() {
+        let path = tmp_ledger_path("ctrl-c-help");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('?'));
+        assert!(app.show_help);
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn legacy_handle_key_wrapper_still_routes_navigation_and_quit() {
+        let path = tmp_ledger_path("legacy-wrapper");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('j'));
+        assert_eq!(app.selected_task_id(), Some("task-b"));
+        app.handle_key(KeyCode::Char('k'));
+        assert_eq!(app.selected_task_id(), Some("task-a"));
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.pane, Pane::Detail);
+        app.handle_key(KeyCode::Char('q'));
+        assert!(app.should_quit);
     }
 }
