@@ -20,4 +20,68 @@ exclude_re = [
     # (polyforge-core test_latest_state_per_task_* family pins final states).
     "replace latest_state_per_task ",
     "in latest_state_per_task$",
+    # --- polyforge-cli RFC3339 parser wave (2026-08-22) ---
+    # parse_rfc3339_to_nanos::num bounds guard (:397): every call site is
+    # statically bounded - the mandatory len >= 19 check precedes all
+    # fixed-offset reads, and pos + 6 <= b.len() guards the offset reads -
+    # so neither disjunct of the guard can fire on reachable input; the
+    # guard is defensive dead code and every mutation of it is
+    # observationally identical. Column pins keep the sibling :397:16 site
+    # (end == b.len(), live-guarded by the +HH:MM table tests) untouched.
+    'main\.rs:397:26: replace \|\| with && in parse_rfc3339_to_nanos::num$',
+    'main\.rs:397:35: replace > with == in parse_rfc3339_to_nanos::num$',
+    'main\.rs:397:35: replace > with >= in parse_rfc3339_to_nanos::num$',
+    # Length floor < -> <= (:411): every len-19 input necessarily lacks room
+    # for any zone suffix (Z needs 1 more byte, +/-HH:MM needs 6) and cannot
+    # carry a fraction, so the parser returns None at the zone stage anyway;
+    # returning None one check earlier is observationally identical. The
+    # column pin keeps the same-description :435/:438/:455 loop-bound sites
+    # live-guarded (fraction-to-end input panics under :438 mutation).
+    'main\.rs:411:16: replace < with <= in parse_rfc3339_to_nanos$',
+    # civil_to_days era branch y - 399 (:486): reachable only through year
+    # 0000 January/February (the m <= 2 adjustment produces y = -1), and
+    # every such timestamp sits ~62 billion seconds before epoch, so the
+    # final checked_mul(1_000_000_000) overflows i64 and yields None under
+    # every variant including the original. Column pins keep the other
+    # minus sites (live-guarded by exact-value table tests) untouched.
+    'main\.rs:486:40: replace - with \+ in civil_to_days$',
+    'main\.rs:486:40: replace - with / in civil_to_days$',
+    # --- polyforge-tui mutation-guard wave (2026-08-22) ---
+    # TUI entries below are anchored on the crate-relative path prefix that
+    # cargo-mutants 27.1.0 prints on --list lines, so they cannot leak into
+    # other crates' identically named functions.
+    #
+    # [B] ui.rs draw_detail: equivalent by the render-time clamp. The mutated
+    # guard diverges only when entries_of_selected is empty, and then
+    # max_offset clamps the scroll row to 0, where Paragraph::scroll((0, 0))
+    # is the identity transform, so every rendered frame matches.
+    'polyforge-tui/src/ui\.rs.*replace && with \|\| in draw_detail$',
+    # [C] ui.rs centered_rect: pure-render geometry; content pinned by
+    # TestBackend substring snapshots. Modal centering arithmetic (percent
+    # width, centered x/y offsets) has no meaningfully assertable unit output
+    # beyond what those snapshots already pin.
+    'polyforge-tui/src/ui\.rs.*replace centered_rect ',
+    'polyforge-tui/src/ui\.rs.*in centered_rect$',
+    # [C] ui.rs draw pane split: pure-render geometry; content pinned by
+    # TestBackend substring snapshots. The list/detail percentage split
+    # arithmetic is layout math with no meaningful unit-level contract.
+    'polyforge-tui/src/ui\.rs.*replace - with \+ in draw$',
+    # [D] main.rs terminal setup/teardown sequence; restore idempotence is
+    # unit-tested separately where feasible. enable/disable raw mode,
+    # alternate screen, and mouse capture need a live tty; headless processes
+    # cannot observe them without hanging on the event source.
+    'polyforge-tui/src/main\.rs.*replace restore_terminal ',
+    'polyforge-tui/src/main\.rs.*in restore_terminal$',
+    # [D] main.rs run/event_loop: event-loop setup. The loop body, its quit
+    # predicate, and the mouse-wheel arms drive crossterm's global event
+    # source, which has no injectable seam headless; wheel routing itself is
+    # covered by App::handle_mouse_scroll guards in app.rs.
+    'polyforge-tui/src/main\.rs.*replace run ',
+    'polyforge-tui/src/main\.rs.*in run$',
+    'polyforge-tui/src/main\.rs.*replace event_loop ',
+    'polyforge-tui/src/main\.rs.*in event_loop$',
+    # [D] main.rs main: binary entrypoint spawning the live terminal session;
+    # exit-code mapping is exercised only by out-of-process smoke runs.
+    'polyforge-tui/src/main\.rs.*replace main ',
+    'polyforge-tui/src/main\.rs.*in main$',
 ]

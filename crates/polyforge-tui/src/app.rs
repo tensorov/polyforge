@@ -1029,4 +1029,108 @@ mod tests {
         app.handle_key(KeyCode::Char('q'));
         assert!(app.should_quit);
     }
+
+    #[test]
+    fn debug_impl_renders_struct_fields() {
+        let path = tmp_ledger_path("debug-fmt");
+        write_two_task_ledger(&path);
+        let app = App::load(&path);
+
+        let dbg = format!("{app:?}");
+        assert!(
+            dbg.starts_with("App {"),
+            "debug output must name the struct, got: {dbg}"
+        );
+        for field in [
+            "ledger_path",
+            "tasks",
+            "selected: 0",
+            "pane: List",
+            "should_quit: false",
+        ] {
+            assert!(dbg.contains(field), "debug output missing {field:?}: {dbg}");
+        }
+    }
+
+    #[test]
+    fn ledger_path_default_mirrors_cli_resolution() {
+        let saved = std::env::var("PF_LEDGER").ok();
+
+        std::env::remove_var("PF_LEDGER");
+        assert_eq!(
+            App::ledger_path_default(),
+            PathBuf::from(".pf/ledger.jsonl"),
+            "unset PF_LEDGER falls back to the CLI default"
+        );
+
+        std::env::set_var("PF_LEDGER", "");
+        assert_eq!(
+            App::ledger_path_default(),
+            PathBuf::from(".pf/ledger.jsonl"),
+            "an empty PF_LEDGER must fall back to the default"
+        );
+
+        std::env::set_var("PF_LEDGER", "/tmp/pf-tui-custom-ledger.jsonl");
+        assert_eq!(
+            App::ledger_path_default(),
+            PathBuf::from("/tmp/pf-tui-custom-ledger.jsonl"),
+            "a non-empty PF_LEDGER wins over the default"
+        );
+
+        match saved {
+            Some(value) => std::env::set_var("PF_LEDGER", value),
+            None => std::env::remove_var("PF_LEDGER"),
+        }
+    }
+
+    #[test]
+    fn q_quits_while_the_help_overlay_is_open() {
+        let path = tmp_ledger_path("help-quit");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Char('?'));
+        assert!(app.show_help);
+        app.handle_key(KeyCode::Char('q'));
+        assert!(app.should_quit, "'q' must quit through the help overlay");
+    }
+
+    #[test]
+    fn list_pane_navigation_never_populates_the_detail_cache() {
+        let path = tmp_ledger_path("nav-no-cache");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Up);
+        assert!(
+            app.entries_of_selected.is_empty(),
+            "moving the selection in the list pane must not refresh detail entries"
+        );
+    }
+
+    #[test]
+    fn entering_detail_pane_loads_the_entry_cache() {
+        let path = tmp_ledger_path("enter-cache");
+        write_two_task_ledger(&path);
+        let mut app = App::load(&path);
+
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.pane, Pane::Detail);
+        assert!(
+            !app.entries_of_selected.is_empty(),
+            "entering the detail pane must load the selected task's entries"
+        );
+    }
+
+    #[test]
+    fn tail_hash_equals_the_chain_head_of_a_valid_ledger() {
+        let path = tmp_ledger_path("tail-hash");
+        write_two_task_ledger(&path);
+        let app = App::load(&path);
+
+        let expected = Ledger::new(&path).verify_chain().unwrap().head_hash;
+        assert_eq!(app.tail_hash, expected);
+        assert_eq!(app.tail_hash.len(), 64, "chain head is a sha256 hex string");
+    }
 }

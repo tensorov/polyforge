@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use polyforge_core::evidence::{promote, EvidenceEntry as TriStateEvidence};
 use polyforge_core::ledger::Ledger;
 use polyforge_tui::app::App;
+use polyforge_tui::theme;
 use polyforge_tui::ui;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
@@ -400,5 +401,250 @@ fn bulk_summary_after_execute() {
     assert!(
         screen.contains("done 2, skipped 0"),
         "bulk summary toast missing:\n{screen}"
+    );
+}
+
+fn render_buffer(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal.draw(|frame| ui::draw(frame, app)).expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+fn seed_cycle_ledger(path: &Path, task: &str, cycles: usize) {
+    let mut ledger = Ledger::new(path);
+    for _ in 0..cycles {
+        let c = claim(task);
+        let v = promote(&c, &attestation(task)).unwrap();
+        let d = promote(&v, &validation(task)).unwrap();
+        ledger.append(c.to_ledger_entry()).unwrap();
+        ledger.append(v.to_ledger_entry()).unwrap();
+        ledger.append(d.to_ledger_entry()).unwrap();
+    }
+}
+
+#[test]
+fn exact_minimum_80x24_renders_the_full_console() {
+    let path = tmp_ledger_path("min-boundary");
+    write_two_task_ledger(&path);
+    let app = App::load(&path);
+
+    let screen = render_to_string(&app, 80, 24);
+    assert!(
+        screen.contains("Tasks ["),
+        "80x24 is exactly the minimum and must render normally:\n{screen}"
+    );
+    assert!(
+        !screen.contains("terminal too small"),
+        "too-small screen must not appear at the exact minimum:\n{screen}"
+    );
+}
+
+#[test]
+fn under_height_triggers_too_small_even_when_wide() {
+    let path = tmp_ledger_path("short-screen");
+    write_two_task_ledger(&path);
+    let app = App::load(&path);
+
+    let screen = render_to_string(&app, 120, 23);
+    assert!(
+        screen.contains("terminal too small"),
+        "23 rows must refuse to render even at 120 columns:\n{screen}"
+    );
+}
+
+#[test]
+fn wide_layout_places_detail_pane_right_of_center() {
+    let path = tmp_ledger_path("wide-split");
+    write_two_task_ledger(&path);
+    let app = App::load(&path);
+
+    let screen = render_to_string(&app, 120, 30);
+    let pos = screen
+        .lines()
+        .enumerate()
+        .find_map(|(y, row)| row.find("Detail: alpha").map(|x| (x, y)))
+        .expect("detail title must render in wide mode");
+    assert!(
+        pos.0 > 25,
+        "at 120 columns the side-by-side layout puts the detail pane in \
+         the right half; found its title at x={}:\n{screen}",
+        pos.0
+    );
+}
+
+#[test]
+fn narrow_layout_stacks_detail_pane_below_the_list() {
+    let path = tmp_ledger_path("stacked-split");
+    write_two_task_ledger(&path);
+    let app = App::load(&path);
+
+    let screen = render_to_string(&app, 88, 24);
+    let ty = screen
+        .lines()
+        .position(|row| row.contains("Detail: alpha"))
+        .expect("detail title must render in stacked mode");
+    assert!(
+        ty >= 10,
+        "below 100 columns the detail pane must sit in the lower half; \
+         title row was {ty}:\n{screen}"
+    );
+}
+
+#[test]
+fn selected_row_carries_selection_style_and_badges_carry_state_colors() {
+    let path = tmp_ledger_path("row-styles");
+    write_two_task_ledger(&path);
+    let app = App::load(&path);
+
+    let buf = render_buffer(&app, 120, 30);
+    let selected_row_cell = buf.cell((1, 1)).expect("alpha row cell");
+    assert_eq!(
+        selected_row_cell.fg,
+        theme::SURFACE,
+        "the selected row must be painted with the selection style"
+    );
+    let unselected_badge_cell = buf.cell((6, 2)).expect("beta badge cell");
+    assert_eq!(
+        unselected_badge_cell.fg,
+        theme::TEXT_DIM,
+        "an unselected badge must carry its state color"
+    );
+}
+
+#[test]
+fn list_pane_detail_shows_enter_hint() {
+    let path = tmp_ledger_path("enter-hint");
+    write_two_task_ledger(&path);
+    let app = App::load(&path);
+
+    let screen = render_to_string(&app, 120, 30);
+    assert!(
+        screen.contains("Enter to open"),
+        "with focus on the list pane the detail pane must show the hint:\n{screen}"
+    );
+}
+
+#[test]
+fn detail_pane_lists_entries_after_entering() {
+    let path = tmp_ledger_path("detail-entries");
+    write_two_task_ledger(&path);
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Enter);
+    let screen = render_to_string(&app, 120, 30);
+    assert!(
+        screen.contains("ToolAttestation"),
+        "the detail pane must list the selected task's entries:\n{screen}"
+    );
+    assert!(
+        !screen.contains("Enter to open"),
+        "the hint must give way to real entries inside the detail pane:\n{screen}"
+    );
+}
+
+#[test]
+fn detail_scroll_offset_shifts_the_visible_entry_window() {
+    let path = tmp_ledger_path("scroll-window");
+    seed_cycle_ledger(&path, "task-s", 12);
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Enter);
+    app.detail_offset = 1;
+
+    let screen = render_to_string(&app, 120, 30);
+    let first_content = screen
+        .lines()
+        .skip_while(|row| !row.contains("Detail: task-s"))
+        .nth(1)
+        .expect("a content row must follow the detail title");
+    assert!(
+        first_content.contains("ToolAttestation"),
+        "offset 1 must hide the first entry line: the 36 entries repeat \
+         with period three, so ToolAttestation replaces ModelClaim at the \
+         top; top content row was {first_content:?}"
+    );
+}
+
+#[test]
+fn list_pane_hint_is_not_scrolled_by_a_stale_detail_offset() {
+    let path = tmp_ledger_path("hint-scroll");
+    write_two_task_ledger(&path);
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Enter);
+    app.detail_offset = 5;
+    app.handle_key(KeyCode::Enter);
+
+    let screen = render_to_string(&app, 120, 30);
+    assert!(
+        screen.contains("Enter to open"),
+        "back on the list pane the hint must render unscrolled:\n{screen}"
+    );
+}
+
+#[test]
+fn empty_ledger_detail_pane_prompts_to_select() {
+    let path = tmp_ledger_path("select-hint");
+    let app = App::load(&path);
+
+    let screen = render_to_string(&app, 120, 30);
+    assert!(
+        screen.contains("Select a task"),
+        "an empty ledger must prompt in the detail pane:\n{screen}"
+    );
+}
+
+#[test]
+fn status_bar_carries_the_chain_head_prefix() {
+    let path = tmp_ledger_path("status-head");
+    write_two_task_ledger(&path);
+    let app = App::load(&path);
+    assert!(!app.tail_hash.is_empty());
+
+    let head: String = app.tail_hash.chars().take(12).collect();
+    let screen = render_to_string(&app, 120, 30);
+    assert!(
+        screen.contains(&head),
+        "status bar must show the 12-char chain head {head}:\n{screen}"
+    );
+}
+
+#[test]
+fn bulk_modal_hides_overflow_line_when_everything_fits() {
+    let path = tmp_ledger_path("bulk-small");
+    seed_verified(&path, "t-01");
+    seed_verified(&path, "t-02");
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('A'));
+    assert!(app.pending_confirm.is_some());
+
+    let screen = render_to_string(&app, 100, 30);
+    assert!(
+        screen.contains("Confirm bulk validation"),
+        "bulk modal missing:\n{screen}"
+    );
+    assert!(
+        !screen.contains("more"),
+        "no overflow line may render when every task fits the list:\n{screen}"
+    );
+}
+
+#[test]
+fn bulk_modal_lists_overflow_count_beyond_ten_tasks() {
+    let path = tmp_ledger_path("bulk-big");
+    for i in 0..12 {
+        seed_verified(&path, &format!("t-{i:02}"));
+    }
+    let mut app = App::load(&path);
+
+    app.handle_key(KeyCode::Char('A'));
+    assert!(app.pending_confirm.is_some());
+
+    let screen = render_to_string(&app, 100, 30);
+    assert!(
+        screen.contains("+2 more"),
+        "12 verified tasks must overflow the 10-row list by 2:\n{screen}"
     );
 }

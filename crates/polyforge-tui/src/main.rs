@@ -114,3 +114,42 @@ fn restore_terminal() {
     let _ = io::stdout().execute(DisableMouseCapture);
     let _ = io::stdout().execute(LeaveAlternateScreen);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(items: &[&str]) -> impl Iterator<Item = String> {
+        items
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn parse_ledger_flag_extracts_the_path_after_the_flag() {
+        assert_eq!(
+            parse_ledger_flag(args(&["--ledger", "/tmp/x.jsonl"])),
+            Some(PathBuf::from("/tmp/x.jsonl"))
+        );
+    }
+
+    #[test]
+    fn parse_ledger_flag_returns_none_without_the_flag() {
+        assert_eq!(parse_ledger_flag(args(&[])), None);
+    }
+
+    #[test]
+    fn parse_ledger_flag_skips_unknown_flags_before_the_match() {
+        assert_eq!(
+            parse_ledger_flag(args(&["--verbose", "--ledger", "/tmp/y.jsonl"])),
+            Some(PathBuf::from("/tmp/y.jsonl"))
+        );
+    }
+
+    #[test]
+    fn parse_ledger_flag_with_no_value_yields_none() {
+        assert_eq!(parse_ledger_flag(args(&["--ledger"])), None);
+    }
+}

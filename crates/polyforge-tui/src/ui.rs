@@ -398,3 +398,28 @@ fn centered_rect(width_pct: u16, height: u16, area: Rect) -> Rect {
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width, height)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_chars_keeps_short_text_intact() {
+        assert_eq!(truncate_chars("hello", 10), "hello");
+        assert_eq!(truncate_chars("", 3), "");
+        assert_eq!(truncate_chars("exact", 5), "exact");
+    }
+
+    #[test]
+    fn truncate_chars_cuts_with_an_ellipsis_marker() {
+        assert_eq!(truncate_chars("hello", 4), "hel~");
+        assert_eq!(truncate_chars("hello", 1), "~");
+        assert_eq!(truncate_chars("hello", 0), "~");
+    }
+
+    #[test]
+    fn truncate_chars_is_char_boundary_safe() {
+        assert_eq!(truncate_chars("проверка", 4), "про~");
+        assert_eq!(truncate_chars("проверка", 8), "проверка");
+    }
+}

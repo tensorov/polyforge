@@ -1435,6 +1435,30 @@ mod tests {
         assert!(validate_tool_args("eslint", &eslint_ok).is_ok());
     }
 
+    /// Mutant runner.rs:390:42 (delete ! in the "-p no:" exemption): the
+    /// single-token form "-p no:<plugin>" must stay allowed exactly like the
+    /// pair form above; deleting the negation denies it instead.
+    #[test]
+    fn pytest_single_token_no_plugin_arg_is_allowed() {
+        let args = vec!["-p no:cacheprovider".to_string()];
+        assert!(
+            validate_tool_args("pytest", &args).is_ok(),
+            "single-token -p no: exemption must pass validation"
+        );
+    }
+
+    /// Mutant runner.rs:413:29 (&& -> ||): the eslint --format value rule
+    /// must stay scoped to eslint; pytest carrying --format with a .js value
+    /// sits outside that rule and must pass.
+    #[test]
+    fn format_value_rule_is_eslint_scoped() {
+        let args = vec!["--format".to_string(), "fmt.js".to_string()];
+        assert!(
+            validate_tool_args("pytest", &args).is_ok(),
+            "non-eslint tools are not subject to the eslint --format rule"
+        );
+    }
+
     /// Tab is a shell word separator and must be rejected like newline/NUL.
     #[test]
     fn validate_arg_rejects_tab_metachar() {

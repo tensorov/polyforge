@@ -1126,7 +1126,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    use super::{build_otlp_export, parse_rfc3339_to_nanos, ts_to_nanos, LedgerEntry};
+    use super::{build_otlp_export, dispatch, parse_rfc3339_to_nanos, ts_to_nanos, LedgerEntry};
 
     #[test]
     fn test_parse_rfc3339_table() {
@@ -1265,5 +1265,112 @@ mod tests {
         assert_eq!(find("diff_hash").as_deref(), Some("d"));
         assert_eq!(find("ts").as_deref(), Some("weird-ts"));
         assert_eq!(find("hash").as_deref().map(str::len), Some(64));
+    }
+
+    // ---- RFC3339 parser + dispatch mutation guards (2026-08-22 wave) ----
+
+    /// Boundary guards for parse_rfc3339_to_nanos: field range checks (:429),
+    /// fraction-digit loop bound (:438), zone-sign and offset arithmetic
+    /// (:458-:466), and civil_to_days year-0000 era math (:486). Each row
+    /// pins exact nanos or an explicit rejection.
+    #[test]
+    fn test_parse_rfc3339_boundary_guards() {
+        let cases: &[(&str, Option<&str>)] = &[
+            // hour 23 stays valid (:429:13 >= mutant would reject it)
+            ("2026-08-22T23:14:15Z", Some("1787440455000000000")),
+            // minute 59 + second 59 stay valid (:429:28/:429:43 >= mutants)
+            ("2026-08-22T12:59:59Z", Some("1787403599000000000")),
+            // minute 60 rejected (:429:28 == mutant would accept it)
+            ("2026-08-22T12:60:00Z", None),
+            // fraction digits running to end of input: no zone suffix, so
+            // the original rejects; the :438 <= loop-bound mutant reads
+            // b[len] out of bounds first and panics
+            ("2026-08-22T12:34:56.123", None),
+            // positive offset with nonzero minutes (:466 + -> - mutant folds
+            // 5h30m into 4h30m and shifts every value)
+            ("2026-08-22T12:34:56+05:30", Some("1787382296000000000")),
+            // negative offset keeps its sign (:459 deleted -1 arm flips it)
+            ("2026-08-22T12:34:56-05:00", Some("1787420096000000000")),
+            // fraction before a numeric offset (:458 pos+3 -> pos-3 mutant
+            // probes the wrong colon and rejects the whole timestamp)
+            ("2026-08-22T12:34:56.5+05:30", Some("1787382296500000000")),
+            // offset-hour bounds: 23 ok, 24 not (:462 ==/>=/||->&& mutants)
+            ("2026-08-22T00:00:00+23:00", Some("1787274000000000000")),
+            ("2026-08-22T00:00:00+24:00", None),
+            // offset-minute bounds: 59 ok, 60 not (:462 ==/>= mutants)
+            ("2026-08-22T00:00:00+00:59", Some("1787353260000000000")),
+            ("2026-08-22T00:00:00+00:60", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                parse_rfc3339_to_nanos(input).as_deref(),
+                *expected,
+                "parse_rfc3339_to_nanos({input:?}) mismatch"
+            );
+        }
+    }
+
+    /// Separator checks (:414 ||-> && mutants): exactly one wrong separator
+    /// must reject; each mutated conjunct chain would fall through and parse
+    /// the rest as if the layout were intact.
+    #[test]
+    fn test_parse_rfc3339_rejects_each_bad_separator() {
+        for input in [
+            "2026X08-22T12:34:56Z", // b[4] != '-'
+            "2026-08X22T12:34:56Z", // b[7] != '-'
+            "2026-08-22T12:34X56Z", // b[16] != ':'
+        ] {
+            assert!(
+                parse_rfc3339_to_nanos(input).is_none(),
+                "{input:?} with one bad separator must be rejected"
+            );
+        }
+    }
+
+    /// Short-input floor (:411 < -> == mutant): inputs shorter than the
+    /// mandatory 19 bytes must reject cleanly, never index past the buffer.
+    #[test]
+    fn test_parse_rfc3339_rejects_short_input() {
+        assert_eq!(parse_rfc3339_to_nanos("2026-08-2"), None);
+        assert_eq!(parse_rfc3339_to_nanos("2026"), None);
+    }
+
+    /// civil_to_days era branch for y < 0 (:486 - -> + / - -> / mutants):
+    /// only year 0000 January/February reach a negative y through the
+    /// m <= 2 adjustment, and every such timestamp overflows i64 nanos in
+    /// the final checked_mul, so all variants observably agree on None.
+    /// This pin doubles as a tripwire: widening the nanos type would make
+    /// the era branch observable and require real coverage here.
+    #[test]
+    fn test_parse_rfc3339_year_zero_overflows_to_none() {
+        assert_eq!(parse_rfc3339_to_nanos("0000-02-01T00:00:00Z"), None);
+        assert_eq!(parse_rfc3339_to_nanos("0000-01-01T00:00:00Z"), None);
+    }
+
+    /// dispatch ledger-export usage guards (:906 ||-> && mutant): a missing
+    /// --otel argument and a non-otel third argument must both yield the
+    /// usage error, never fall through to the exporter.
+    #[test]
+    fn test_dispatch_ledger_export_usage_errors() {
+        let err = dispatch(&["ledger".into(), "export".into()]).unwrap_err();
+        assert_eq!(err, "usage: pf ledger export --otel [--out <path>]");
+        let err = dispatch(&["ledger".into(), "export".into(), "--json".into()]).unwrap_err();
+        assert_eq!(err, "usage: pf ledger export --otel [--out <path>]");
+    }
+
+    /// dispatch --out loop step (:919 += -> *= mutant): i *= 2 jumps from 3
+    /// to 6, silently skipping the trailing unknown flag that must error.
+    #[test]
+    fn test_dispatch_ledger_export_out_flag_consumes_value() {
+        let err = dispatch(&[
+            "ledger".to_string(),
+            "export".to_string(),
+            "--otel".to_string(),
+            "--out".to_string(),
+            "/tmp/pf-mt-guard-export.jsonl".to_string(),
+            "extra".to_string(),
+        ])
+        .unwrap_err();
+        assert_eq!(err, "unknown flag for ledger export: extra");
     }
 }
