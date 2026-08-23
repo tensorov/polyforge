@@ -18,7 +18,7 @@ record claims, allowlisted tools attest them, and operators gate on the resultin
 
 ## Proof
 
-Everything in this README is covered by the workspace test suite (269 tests across the five
+Everything in this README is covered by the workspace test suite (303 tests across the five
 crates) and by the CLI/MCP smoke and end-to-end harnesses.
 
 Run it yourself: `cargo build --workspace && cargo test --workspace` (see [Build from source](#build-from-source)).
