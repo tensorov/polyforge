@@ -229,6 +229,41 @@ pub fn spawn(tool: &Tool, args: &[String]) -> Result<Child, RunnerError> {
     cmd.spawn().map_err(|e| RunnerError::Spawn(e.to_string()))
 }
 
+/// Execution backend for allowlisted tool runs.
+///
+/// The trait mirrors the free [`run`] function's EXACT signature
+/// (synchronous, no async addition) so call sites can route through a
+/// backend without any behavioral change. Today there is exactly one
+/// implementation, [`ProcessExecutor`]; the indirection exists so a future
+/// backend can be selected behind the same seam.
+pub(crate) trait Executor {
+    /// Run an allowlisted tool to completion under the configured wall-clock
+    /// budget. Contract is byte-identical to the free [`run`] function.
+    fn run(&self, tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError>;
+}
+
+/// The process backend: spawns the canonical allowlisted binary directly via
+/// [`std::process::Command`] (no shell), enforces the typed-arg policy, and
+/// captures output + attestation fields. This is the historical behavior,
+/// moved here 1:1 from the former [`run`] body — every check, ordering, and
+/// error variant is unchanged.
+pub(crate) struct ProcessExecutor;
+
+impl Executor for ProcessExecutor {
+    fn run(&self, tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
+        run_with_timeout(tool, args, parse_timeout())
+    }
+}
+
+/// Singleton instance of the process backend handed out by [`executor`].
+static PROCESS_EXECUTOR: ProcessExecutor = ProcessExecutor;
+
+/// Module-level accessor returning the selected execution backend. Today the
+/// selection is fixed: the process backend is the only one.
+pub(crate) fn executor() -> &'static dyn Executor {
+    &PROCESS_EXECUTOR
+}
+
 /// Run an allowlisted tool to completion and capture its output + attestation
 /// fields, bounded by the `PF_TOOL_TIMEOUT_SECS` wall-clock budget (default
 /// [`DEFAULT_TOOL_TIMEOUT_SECS`]). A tool that outlives the budget is killed
@@ -239,8 +274,10 @@ pub fn spawn(tool: &Tool, args: &[String]) -> Result<Child, RunnerError> {
 /// binary identity and fixed args; caller-supplied [`Tool`] fields other than
 /// `name` are ignored, including in the attested `command` string and the
 /// resolved `tool_version`.
+///
+/// Delegates to the module's selected [`Executor`] backend ([`ProcessExecutor`]).
 pub fn run(tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
-    run_with_timeout(tool, args, parse_timeout())
+    executor().run(tool, args)
 }
 
 /// Like [`run`], but with an explicit wall-clock budget.

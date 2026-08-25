@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use polyforge_core::evidence::{promote, EvidenceEntry, EvidenceKind, EvidenceState, GitState};
 use polyforge_core::ledger::{EntryId, EvidenceEntry as LedgerEntry, Ledger};
 
-use crate::runner::{run, sha256_hex, RunnerError, Tool};
+use crate::runner::{executor, sha256_hex, RunnerError, Tool};
 
 /// Maximum number of stderr bytes recorded in the ledger for a failed run.
 const STDERR_LEDGER_LIMIT: usize = 2048;
@@ -143,7 +143,7 @@ pub fn verify_and_append(
     ledger
         .verify_chain()
         .map_err(|e| RunnerError::Ledger(format!("{e:?}")))?;
-    let output = run(tool, args)?;
+    let output = executor().run(tool, args)?;
     if output.exit_code != 0 {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let discrepancy = EvidenceEntry::discrepancy(
