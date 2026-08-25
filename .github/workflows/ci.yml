@@ -174,7 +174,7 @@ jobs:
           echo "TAIL=$TAIL" >> "$GITHUB_ENV"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign ledger tail keylessly
         run: cosign sign-blob --yes --bundle "anchor-${{ github.run_id }}.bundle" /tmp/tail.txt
