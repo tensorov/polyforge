@@ -192,3 +192,59 @@ jobs:
           path: |
             anchor-${{ github.run_id }}.bundle
             /tmp/tail.txt
+
+  publish-anchor:
+    needs: [ci, anchoring]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build polyforge-attest and polyforge-cli
+        run: cargo build -p polyforge-attest -p polyforge-cli
+
+      - name: Emit chain statement
+        run: target/debug/polyforge-attest chain --ledger .pf/ledger.jsonl --out /tmp/chain-statement.json
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4.1.2
+
+      - name: Sign chain statement keylessly (Rekor upload default-on)
+        run: cosign sign-blob --yes --bundle /tmp/anchor-pub.bundle /tmp/chain-statement.json
+
+      - name: Extract publication record from bundle
+        run: |
+          TAIL=$(target/debug/polyforge-cli ledger tail)
+          BUNDLE_SHA=$(sha256sum /tmp/anchor-pub.bundle | cut -d' ' -f1)
+          python3 - "$TAIL" "$BUNDLE_SHA" "${{ github.run_id }}" <<'EOF'
+          import json
+          import sys
+
+          tail_hash, bundle_sha256, run_id = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open("/tmp/anchor-pub.bundle") as f:
+              bundle = json.load(f)
+          entry = bundle["verificationMaterial"]["tlogEntries"][0]
+          record = {
+              "tail_hash": tail_hash,
+              "bundle_sha256": bundle_sha256,
+              "rekor_index": entry["logIndex"],
+              "run_id": run_id,
+          }
+          with open("anchor-publication.json", "w") as f:
+              json.dump(record, f, indent=2)
+              f.write("\n")
+          EOF
+
+      - name: Upload anchor publication artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: anchor-publication
+          path: |
+            anchor-publication.json
+            /tmp/anchor-pub.bundle
