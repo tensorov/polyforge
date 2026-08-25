@@ -1,3 +1,5 @@
+**English** | [Русский](README.ru.md) | [Deutsch](README.de.md) | [中文](README.zh-CN.md)
+
 # PolyForge
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -9,138 +11,38 @@
 [![polyforge-cli](https://img.shields.io/crates/v/polyforge-cli?label=polyforge-cli)](https://crates.io/crates/polyforge-cli)
 [![polyforge-tui](https://img.shields.io/crates/v/polyforge-tui?label=polyforge-tui)](https://crates.io/crates/polyforge-tui)
 
-## Demo
+<p align="center"><img src="assets/readme/hero.en.gif" width="100%" alt="PolyForge - Make every AI claim provable"></p>
+<p align="center"><sub>Animated demo. Prefer a static image? Open <a href="assets/readme/hero.en.svg">assets/readme/hero.en.svg</a>.</sub></p>
 
-[![PolyForge — the gate demo, live](assets/readme/hero.gif)](assets/readme/hero.svg)
+## AI agents say "done." PolyForge makes it provable.
 
-PolyForge is a tamper-evident evidence ledger for AI-driven engineering workflows: models
-record claims, allowlisted tools attest them, and operators gate on the resulting chain.
+<p align="center"><img src="assets/readme/story-card.en.svg" width="100%" alt="PolyForge in three steps: the agent records a claim, a real tool run must confirm it, and the merge gate passes only with proof"></p>
+
+## What is PolyForge?
+
+AI coding agents work fast and report their own results. PolyForge adds a notebook to your repository that cannot quietly rewrite history. The agent writes down what it claims to have done. A real tool run, such as tests, type checks, or a build, must confirm each claim before it counts as verified. When the proof is missing, the gate stays red and the work does not merge.
+
+Under the hood that notebook is an append-only Merkle chain: every entry commits to the hash of the previous one, so editing a single byte breaks the chain and every later check fails.
 
 ## Proof
 
-Everything in this README is covered by the workspace test suite (303 tests across the five
-crates) and by the CLI/MCP smoke and end-to-end harnesses.
+Everything described here is covered by 303 tests across the five workspace crates, plus CLI/MCP smoke and end-to-end harnesses. Run the suite yourself: `cargo build --workspace && cargo test --workspace`.
 
-Run it yourself: `cargo build --workspace && cargo test --workspace` (see [Build from source](#build-from-source)).
+Three more reasons to trust the numbers:
 
-## Why "PolyForge"
+- This repository gates its own CI with [tensorov/polyforge-action@v1](https://github.com/tensorov/polyforge-action) on every push and pull request.
+- Gate bundles are reproducible: a second passing run produces a byte-identical bundle and the same SHA-256.
+- A runnable end-to-end walkthrough of the evidence lifecycle ships in [crates/polyforge-core/examples/ledger_flow.rs](crates/polyforge-core/examples/ledger_flow.rs): `cargo run -p polyforge-core --example ledger_flow`.
 
-> **Why "PolyForge"**: *poly* — many agents working together; *forge* — the place where their raw claims are forged into verifiable evidence: through the gate, a model's claim becomes a fact only when a real tool run proves it. (And yes — the name is also a wink: this is the forge that makes forged history impossible.)
+## Install & first run
 
-## Architecture
-
-Workspace of five crates (edition 2021, rust-version 1.85, Rust toolchain 1.95.0):
-
-| Crate                   | Crates.io                                                                                        | Responsibility                                                                                   |
-| ----------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `polyforge-core`        | [![crates.io](https://img.shields.io/badge/crates.io-0.3.0-blue)](https://crates.io/crates/polyforge-core) | Evidence model: tri-state entries, promotion rules, the append-only Merkle ledger, and deterministic gate evaluation. |
-| `polyforge-toolrunner`  | [![crates.io](https://img.shields.io/badge/crates.io-0.3.0-blue)](https://crates.io/crates/polyforge-toolrunner) | Allowlisted tool runner: only allowlisted binaries (cargo/rustc/gcc), typed arguments, no shell, per-command environment fingerprint (Nix store-path digest + devbox.lock sha256 folded in when present, Cargo.lock sha256 always, plus the values of key build env vars such as CFLAGS/CXXFLAGS/LDFLAGS/RUSTDOCFLAGS when set). |
-| `polyforge-mcp`         | [![crates.io](https://img.shields.io/badge/crates.io-0.3.0-blue)](https://crates.io/crates/polyforge-mcp) | Model Context Protocol server (rmcp): the interface models use to append claims and query gates. |
-| `polyforge-cli`         | [![crates.io](https://img.shields.io/badge/crates.io-0.3.0-blue)](https://crates.io/crates/polyforge-cli) | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.           |
-| `polyforge-tui`         | [![crates.io](https://img.shields.io/badge/crates.io-0.3.0-blue)](https://crates.io/crates/polyforge-tui) | LazyForge terminal operator console: browse tasks, validate, bulk-validate over the evidence ledger. |
-
-All five crates are published to [crates.io](https://crates.io): `v0.3.0` of
-`polyforge-core`, `polyforge-toolrunner`, `polyforge-mcp`, and `polyforge-cli` (install the
-binaries with `cargo install polyforge-cli polyforge-mcp`; `cargo install polyforge-tui`
-adds the LazyForge operator console, whose binary is named `lazyforge`).
-
-The CLI binary is named `polyforge-cli` (the crate name). All examples in this README use
-it directly; `alias pf=polyforge-cli` if you prefer the short name.
-
-### Operator console and guides
-
-- [LazyForge user guide](docs/lazyforge.md)
-- [Verified integration guides](docs/integrations/) (OpenCode, Claude Code, Codex)
-- [Servers-directory submission kit](docs/mcp-servers-pr-kit/)
-
-## Evidence lifecycle
-
-Evidence is tri-state and only ever moves forward:
-
-![Evidence lifecycle: ModelClaimed → Verified → Validated](assets/readme/lifecycle.svg)
-
-- `model_claim` — the model records a claim about its own work. Creates a `ModelClaimed` entry.
-- `tool_attestation` — an allowlisted tool run produces a `ToolAttestation` entry that
-  promotes the task's `ModelClaimed` entry to `Verified`.
-- `eval_attestation` — an operator records an evaluation outcome (experiment, run, model
-  fingerprint, budget) that promotes the task's `ModelClaimed` entry to `Verified`.
-- `discrepancy` — an operator (or the toolrunner, on a failed verifier run) records a
-  refutation trace that promotes the task's `ModelClaimed` entry to `Refuted`.
-- `validation` — an operator validation produces a `Validation` entry that promotes the
-  task's `Verified` entry to `Validated`.
-
-A gate can require `verified` or `validated` (see below). `Refuted` entries are recorded
-but never satisfy a gate in this milestone.
-
-Tool attestations carry a wall-clock timestamp (`ts`) captured at run time, and the
-toolrunner's payload is git-aware: when a verifier runs inside a git checkout, the
-recorded payload reflects the repository state (commit and diff) rather than a bare
-command string.
-
-## Models can never self-produce `Verified`
-
-- The CLI accepts five kinds: `model_claim`, `tool_attestation`, `validation`,
-  `eval_attestation`, and `discrepancy`. `model_claim` can only create a new
-  `ModelClaimed` entry.
-- `tool_attestation` does not append a bare entry: it locates the task's latest
-  `ModelClaimed` entry and promotes it. With no prior claim the append is rejected
-  (models cannot self-promote).
-- The MCP `evidence_append` tool accepts `kind=ModelClaim` **only**; `ToolAttestation`,
-  `Validation`, `EvalAttestation`, and `Discrepancy` are rejected at the server — models
-  connected over MCP cannot create `Verified`, `Refuted`, or `Validated` entries at all.
-- Promotion is enforced by the single `promote` gatekeeper in `polyforge-core`; a model's
-  only path toward `Verified` is an allowlisted tool attestation.
-
-## Build from source
-
-The workspace requires a Rust toolchain of at least version 1.85 (edition 2021; developed
-against toolchain 1.95.0). The polyforge-tui crate additionally requires Rust 1.88 or newer
-(ratatui 0.30); every other crate builds on Rust 1.85. Building the workspace in release mode
-produces the `polyforge-cli` binary:
+Install from [crates.io](https://crates.io). All five crates are published at v0.3.0; `polyforge-tui` ships with this release. You need a Rust toolchain (1.85 or newer, 1.88+ for the TUI):
 
 ```sh
-cargo build --release
+cargo install polyforge-cli polyforge-mcp polyforge-tui
 ```
 
-The binary lands in `target/release/polyforge-cli`. Build and test the whole workspace:
-
-```sh
-cargo build --workspace
-cargo test --workspace
-```
-
-## Python / TypeScript repos
-
-The v2 allowlist attests Python and JS/TS tools: `pytest`, `ruff check`,
-`ruff format --check`, `mypy`, `pyright`, `uv --version`, `vitest run`, `tsc`
-(`--noEmit`), `eslint`, and `biome check`.
-
-Install stays cargo-based: `cargo install polyforge-cli polyforge-mcp` requires a Rust
-toolchain; `cargo install polyforge-tui` adds the LazyForge operator console (binary
-`lazyforge`).
-
-Tools resolve from the PATH of the polyforge process; activating your project's venv before
-running attestations is operator duty.
-
-Mutating or code-loading flags are denied at validation: `--fix` / `--unsafe-fixes` (ruff
-check), `--fix` / `--rulesdir` / `--resolve-plugins-relative-to` and non-builtin `--format`
-values (eslint), `--apply` / `--apply-unsafe` / `--write` (biome check), `-u` / `--update`
-(vitest run), `-p` (except `-p no:*`) and `--pdb` (pytest). `gcc -v` accepts no extra args.
-Package runners (`uv run`, `npx`, `npm exec`) are excluded entirely: their argv resolves an
-unbounded binary set.
-
-Environment fingerprints fold `uv.lock`, `pnpm-lock.yaml`, `package-lock.json` and
-`yarn.lock` when present, discovered from the git root or cwd ancestors - no Cargo.toml
-required.
-
-CI users on foreign repos: add a Rust toolchain step (e.g. dtolnay/rust-toolchain) BEFORE
-`tensorov/polyforge-action@v1` - the action runs `cargo install polyforge-cli --locked`.
-
-## Quick start
-
-![PolyForge CLI demo](assets/readme/cli-demo.svg)
-
-The sequence below was run verbatim against the real binary, every command exiting 0:
+Record a claim, prove it with a tool attestation, validate it, and pass two gates:
 
 ```sh
 export PF_LEDGER=/tmp/pf-demo/ledger.jsonl
@@ -154,43 +56,33 @@ polyforge-cli append validation "operator check" --task demo
 polyforge-cli gate demo --required validated
 ```
 
-What each step does:
+What happened: `init` created the ledger, the model claim created a `ModelClaimed` entry, the tool attestation promoted it to `Verified`, the validation promoted it further to `Validated`, and both gates passed with exit code 0. `ledger tail` printed the 64-hex SHA-256 tail hash of the chain.
 
-- `init` creates the ledger and prints `created ledger at <path>`.
-- `append model_claim ...` records a claim by the model; `append tool_attestation ...`
-  promotes the task's claim to `Verified`; `append validation ...` promotes it further to
-  `Validated`. Each `append` prints `appended entry N`.
-- `ledger tail` prints the 64-hex SHA-256 tail hash of the Merkle chain.
-- `gate demo --required verified` writes `gate-demo.jsonl` plus `gate-demo.manifest.json`
-  and prints `gate PASSED for task demo`, exiting 0.
-- On gate failure (required state not reached) the gate exits non-zero and writes no
-  bundle.
+![PolyForge CLI transcript: init, model_claim, tool_attestation, ledger tail, gate PASSED](assets/readme/cli-demo.svg)
 
-The `--required` flag takes a comma-list such as `verified,validated`.
+## How it works
 
-Additional CLI subcommands:
+Evidence is tri-state and only ever moves forward:
 
-- `ledger summary` - print per-task state counts as one grep-able line
-  (`tasks_verified=… tasks_validated=… tasks_failed=…`), classifying each task by its
-  latest ledger entry.
-- `coverage-check --report <llvm-cov.json>` - evaluate a `cargo llvm-cov --json` report
-  against the coverage floor (default 80% aggregate / 80% per file).
-- `append` accepts optional identity flags on any kind: `--experiment <id>`,
-  `--model <fp>`, `--run <id>`, `--budget <amt>`, and `--metadata <json>`. These are
-  record-only (never enforced) and are carried through promotion.
+![Evidence lifecycle: ModelClaimed promoted to Verified, then Validated, with Refuted as a side state](assets/readme/lifecycle.svg)
 
-Environment variables:
+- `model_claim`: the model records a claim about its own work. Creates a `ModelClaimed` entry.
+- `tool_attestation`: an allowlisted tool run promotes the task's claim to `Verified`.
+- `eval_attestation`: an operator records an evaluation outcome (experiment, run, model fingerprint, budget) that also promotes a claim to `Verified`.
+- `discrepancy`: an operator, or the toolrunner on a failed verifier run, records a refutation trace that moves the claim to `Refuted`.
+- `validation`: an operator validation promotes a `Verified` entry to `Validated`.
 
-- `PF_LEDGER` — ledger path (default `.pf/ledger.jsonl`).
-- `PF_EVIDENCE_DIR` — directory for gate bundles and manifests (default `.pf/evidence/`).
-- `PF_ENV_FINGERPRINT` - operator-supplied environment fingerprint recorded on
-  attestations (default `cli`).
+A gate can require `verified`, `validated`, or both. `Refuted` entries are recorded but never satisfy a gate. Tool attestations carry a wall-clock timestamp, and when a verifier runs inside a git checkout the recorded payload reflects the repository state (commit and diff) rather than a bare command string.
 
-## CI integration / GitHub Actions
+## Never trust, always verify
 
-The published action [`tensorov/polyforge-action`](https://github.com/tensorov/polyforge-action)
-gates a task in CI and verifies the committed Merkle-chain anchor. This repository dogfoods
-it on every push and pull request (see `.github/workflows/ci.yml`).
+- A model's word alone is never enough. `model_claim` can only create a new `ModelClaimed` entry, nothing more.
+- Reaching `Verified` requires an attestation from an allowlisted tool: `cargo`, `rustc`, and `gcc` for Rust and C; `pytest`, `ruff`, `mypy`, and `pyright` for Python; `vitest`, `tsc`, `eslint`, and `biome` for JavaScript and TypeScript.
+- Over MCP the lock is tighter: the `evidence_append` tool accepts `kind=ModelClaim` only. Attestations, validations, and discrepancies are rejected at the server, so a connected model cannot create `Verified`, `Refuted`, or `Validated` entries at all.
+
+## Gate it in CI
+
+The published action gates a task against the ledger and verifies the committed Merkle-chain anchor. This repository runs it on every push and pull request.
 
 ```yaml
 - uses: tensorov/polyforge-action@v1
@@ -201,77 +93,24 @@ it on every push and pull request (see `.github/workflows/ci.yml`).
     evidence-dir: .pf/evidence/
 ```
 
-Inputs:
+| Input          | Required | Default              | Description                                         |
+| -------------- | -------- | -------------------- | --------------------------------------------------- |
+| `task-id`      | yes      |                      | Task id to gate against the ledger.                 |
+| `required`     | no       | `verified,validated` | Comma-list of required evidence states.             |
+| `ledger-path`  | no       | `.pf/ledger.jsonl`   | Ledger path relative to the workspace root.         |
+| `evidence-dir` | no       | `.pf/evidence/`      | Evidence directory relative to the workspace root.  |
 
-| Input          | Required | Default               | Description                                        |
-| -------------- | -------- | --------------------- | -------------------------------------------------- |
-| `task-id`      | yes      | —                     | Task id to gate against the ledger.                |
-| `required`     | no       | `verified,validated`  | Comma-list of required evidence states.            |
-| `ledger-path`  | no       | `.pf/ledger.jsonl`    | Ledger path relative to the workspace root.        |
-| `evidence-dir` | no       | `.pf/evidence/`       | Evidence directory relative to the workspace root. |
+The action fails closed: a corrupted chain, a missing anchor, or a gate that never reaches the required state fails the job. Add the job as a required status check in a branch ruleset and a PR cannot merge while the gate is red.
 
-The action fails closed: a corrupted chain, a missing anchor, or a gate that does not reach
-the required state fails the job. To make the gate a hard merge requirement, add the job to
-a branch ruleset as a required status check — a PR cannot merge while the gate is red.
+A passing gate writes `gate-<task_id>.jsonl` plus `gate-<task_id>.manifest.json` containing `task_id`, `tail_hash`, `passed`, `bundle_sha256`, and `tool_versions`. A failing gate exits non-zero and writes no bundle. By default the gate evaluates the task's latest claim; pass `--commit <sha> --diff <hash>` to pin it to a specific claim, and a pinned gate that no longer matches the latest claim is rejected as stale instead of silently passing against older evidence. Running a foreign repo in CI: add a Rust toolchain step (for example `dtolnay/rust-toolchain`) before the action, which runs `cargo install polyforge-cli --locked`.
 
-## Running a gate
+## Connect your agents
 
-```sh
-polyforge-cli gate <task_id> --required verified,validated
-```
-
-- **PASS** (the task's evidence chain satisfies the required state): writes the evidence
-  bundle `gate-<task_id>.jsonl` (the task's ledger records, in sequence) plus
-  `gate-<task_id>.manifest.json` with `task_id`, `tail_hash`, `passed: true`,
-  `bundle_sha256`, and `tool_versions`. The `tail_hash` equals the output of
-  `polyforge-cli ledger tail`.
-- **FAIL** (required state not reached): exits non-zero and never writes a bundle — at
-  most a manifest with `passed: false` and `bundle_sha256: null`. A corrupted chain exits
-  non-zero and writes nothing.
-- `polyforge-cli gate` is reproducible: a second PASS run produces a byte-identical bundle
-  and an identical `bundle_sha256`.
-
-The gate evaluates against a scope. By default it uses the task's latest claim
-(`LatestClaim`); passing both `--commit <sha>` and `--diff <hash>` pins the gate to a
-specific claim (`Keyed`). A keyed gate that does not match the task's latest claim is
-rejected as stale rather than silently passing against an older claim.
-
-## Connecting the MCP army
-
-`polyforge-mcp` is an rmcp server speaking MCP over stdio by default:
-
-```sh
-polyforge-mcp
-```
-
-Transport configuration:
-
-- `PF_MCP_TRANSPORT=stdio` (default) — MCP over standard input/output.
-- `PF_MCP_TRANSPORT=tcp` — MCP over TCP; bind address via `PF_MCP_ADDR`
-  (default `127.0.0.1:18888`). The TCP listener is loopback-only: a non-loopback
-  bind address is rejected at startup. When TCP is enabled, `PF_MCP_TOKEN` is
-  required and every request must carry it as `_pf_token`; a missing or invalid
-  token is rejected with JSON-RPC error `-32001`.
-- `PF_MCP_LEDGER` — ledger path (default `.pf/ledger.jsonl`).
-
-Four tools:
-
-| Tool               | Kind accepted      | Notes                                                            |
-| ------------------ | ------------------ | ---------------------------------------------------------------- |
-| `evidence_append`  | `ModelClaim` only  | Models can only append claims — never attestations/validations.  |
-| `evidence_verify`  | —                  | Runs an allowlisted tool to verify a claim; arbitrary binaries are never executed. |
-| `gate_evaluate`    | —                  | Evaluate the gate for a task (read-only).                        |
-| `gate_report`      | —                  | Report gate/evidence state (read-only).                          |
-
-## Agent integration
-
-Each agent below registers the same `polyforge-mcp` server over stdio. The server reads
-`PF_MCP_TRANSPORT` (default `stdio`), `PF_MCP_ADDR` (default `127.0.0.1:18888`), and
-`PF_MCP_LEDGER` (default `.pf/ledger.jsonl`) — see [Connecting the MCP army](#connecting-the-mcp-army).
+Every agent registers the same `polyforge-mcp` server over stdio. Make sure `polyforge-mcp` is on `PATH`, or point `command` at the full path to your built binary.
 
 ### OpenCode
 
-`opencode.json` (project root or `~/.config/opencode/`):
+In `opencode.json` (project root or `~/.config/opencode/`):
 
 ```json
 {
@@ -293,25 +132,9 @@ Each agent below registers the same `polyforge-mcp` server over stdio. The serve
 claude mcp add polyforge -- polyforge-mcp
 ```
 
-Or `.mcp.json` in the project root:
-
-```json
-{
-  "mcpServers": {
-    "polyforge": {
-      "command": "polyforge-mcp",
-      "args": [],
-      "env": {
-        "PF_MCP_TRANSPORT": "stdio"
-      }
-    }
-  }
-}
-```
-
 ### Codex
 
-`~/.codex/config.toml`:
+In `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.polyforge]
@@ -321,7 +144,7 @@ env = { PF_MCP_TRANSPORT = "stdio" }
 
 ### OpenClaw
 
-`~/.openclaw/config.json` — example, adjust path:
+In `~/.openclaw/config.json` (example, adjust path):
 
 ```json
 {
@@ -337,63 +160,59 @@ env = { PF_MCP_TRANSPORT = "stdio" }
 }
 ```
 
-Make sure `polyforge-mcp` is on `PATH`, or point `command` at the full path to
-`target/release/polyforge-mcp`.
+The server exposes four tools: `evidence_append` (accepts `ModelClaim` only, so models can never append attestations or validations), `evidence_verify` (runs an allowlisted tool to verify a claim; arbitrary binaries are never executed), and the read-only pair `gate_evaluate` and `gate_report`.
 
-## Tamper / rewind guarantee
+Transport options: `PF_MCP_TRANSPORT=stdio` (default) or `tcp` with `PF_MCP_ADDR` (default `127.0.0.1:18888`). The TCP listener is loopback-only and requires `PF_MCP_TOKEN`; every request must carry it as `_pf_token`, and a missing or invalid token is rejected with JSON-RPC error `-32001`. `PF_MCP_LEDGER` selects the ledger path (default `.pf/ledger.jsonl`).
 
-The ledger is an append-only Merkle chain: every entry commits to the hash of the previous
-entry. Rewinding the file or tampering with **one byte** of any entry breaks the chain, and
-any subsequent `polyforge-cli gate` or `evidence_verify` fails with `LedgerIntegrity`.
-Failed integrity checks never fabricate a bundle or manifest — the failure is surfaced and
-nothing is written. This is exercised end-to-end by the army harness (byte-flip in the
-tail entry → gate exits non-zero with `ledger integrity broken at seq …`, no bundle, no
-manifest).
+## Operator console
 
-The chain is hardened against reordering and concurrent writers: entries use a
-length-prefixed canonical encoding (hash version 2), and a committed anchor sidecar
-records the chain tail so a rewind past the anchor is detected. Writers take an exclusive
-file lock (`fs2`) around each append, so concurrent processes cannot interleave entries.
+LazyForge is a terminal UI for browsing tasks, validating entries, and bulk-validating over the evidence ledger. Install it with `cargo install polyforge-tui` (binary: `lazyforge`) and read the [LazyForge user guide](docs/lazyforge.md). Verified integration guides for OpenCode, Claude Code, and Codex live in [docs/integrations/](docs/integrations/), and the MCP servers-directory submission kit is in [docs/mcp-servers-pr-kit/](docs/mcp-servers-pr-kit/).
 
-Tamper evidence holds within a trusted checkout: the chain proves the ledger was not
-rewritten, not that the checkout itself is authentic. Cryptographic external anchoring is
-roadmap (Phase 3).
+<details>
+<summary><b>Architecture: five crates</b></summary>
 
-## Examples
+Workspace of five crates (edition 2021, rust-version 1.85, developed against toolchain 1.95.0):
 
-A runnable end-to-end walkthrough of the tri-state lifecycle lives in
-[`crates/polyforge-core/examples/ledger_flow.rs`](crates/polyforge-core/examples/ledger_flow.rs):
-it creates a temp ledger, appends a `ModelClaim`, applies a tool attestation via `promote`
-(→ `Verified`), runs an `evaluate_complete` gate, and cleans up — all with exit 0.
+| Crate                  | Responsibility                                                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `polyforge-core`       | Evidence model: tri-state entries, promotion rules, the append-only Merkle ledger, and deterministic gate evaluation.    |
+| `polyforge-toolrunner` | Allowlisted tool runner: only allowlisted binaries, typed arguments, no shell, per-command environment fingerprint.       |
+| `polyforge-mcp`        | Model Context Protocol server (rmcp): the interface models use to append claims and query gates.                         |
+| `polyforge-cli`        | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.                                   |
+| `polyforge-tui`        | LazyForge terminal operator console: browse tasks, validate, bulk-validate over the evidence ledger.                      |
+
+The CLI binary is named `polyforge-cli` (the crate name); `alias pf=polyforge-cli` if you prefer the short name.
+
+Environment fingerprints are per-command: a Nix store-path digest and `devbox.lock` sha256 are folded in when present, `Cargo.lock` sha256 always, plus the values of key build env vars such as `CFLAGS`/`CXXFLAGS`/`LDFLAGS`/`RUSTDOCFLAGS` when set. For Python and JS/TS repos the runner folds `uv.lock`, `pnpm-lock.yaml`, `package-lock.json`, and `yarn.lock` when present, discovered from the git root or cwd ancestors, so no `Cargo.toml` is required.
+
+Mutating or code-loading flags are denied at validation: `--fix` / `--unsafe-fixes` (ruff check), `--fix` / `--rulesdir` / `--resolve-plugins-relative-to` and non-builtin `--format` values (eslint), `--apply` / `--apply-unsafe` / `--write` (biome check), `-u` / `--update` (vitest run), `-p` (except `-p no:*`) and `--pdb` (pytest). `gcc -v` accepts no extra args. Package runners (`uv run`, `npx`, `npm exec`) are excluded entirely because their argv resolves an unbounded binary set. Tools resolve from the PATH of the polyforge process; activating your project's venv before running attestations is operator duty.
+
+Other CLI surface: `ledger summary` prints per-task state counts as one grep-able line (`tasks_verified=… tasks_validated=… tasks_failed=…`); `coverage-check --report <llvm-cov.json>` evaluates a `cargo llvm-cov --json` report against the coverage floor (default 80% aggregate / 80% per file); any `append` kind accepts optional record-only identity flags `--experiment`, `--model`, `--run`, `--budget`, and `--metadata`, carried through promotion. Environment variables: `PF_LEDGER` (ledger path, default `.pf/ledger.jsonl`), `PF_EVIDENCE_DIR` (gate bundles, default `.pf/evidence/`), `PF_ENV_FINGERPRINT` (operator-supplied fingerprint recorded on attestations, default `cli`).
+
+Build from source:
 
 ```sh
-cargo run -p polyforge-core --example ledger_flow
+cargo build --release   # binary lands in target/release/polyforge-cli
+cargo build --workspace && cargo test --workspace
 ```
 
-An optional ledger path argument selects the ledger file (a unique temp path is used by
-default).
+</details>
 
-## Performance
+<details>
+<summary><b>Tamper and rewind guarantee</b></summary>
 
-Measured on this machine with the release binary and a fresh ledger in `/tmp/pf-bench`:
+The ledger is an append-only Merkle chain: every entry commits to the hash of the previous entry. Rewinding the file or tampering with **one byte** of any entry breaks the chain, and any subsequent `polyforge-cli gate` or `evidence_verify` fails with `LedgerIntegrity`. Failed integrity checks never fabricate a bundle or manifest: the failure is surfaced and nothing is written. This is exercised end-to-end by the harness (byte-flip in the tail entry means the gate exits non-zero with `ledger integrity broken at seq …`, no bundle, no manifest).
 
-| Scenario | Value | How to reproduce |
-| -------- | ----- | ---------------- |
-| 100-task full chain (300 ledger appends) | 0.510 s | `time ( for i in $(seq 1 100); do polyforge-cli append model_claim "bench claim $i" --task task$i --commit c$i --diff d$i >/dev/null; polyforge-cli append tool_attestation "ran" --task task$i >/dev/null; polyforge-cli append validation "op" --task task$i >/dev/null; done )` |
-| 100 gate checks over a 300-entry ledger | 0.500 s | `time ( for i in $(seq 1 100); do polyforge-cli gate task$i --required validated >/dev/null; done )` |
-| Release binary size | 774664 B | `stat -c%s target/release/polyforge-cli` |
-| Full clean rebuild (`cargo clean` + `cargo build --release`) | 34.15 s | `cargo clean && time cargo build --release` |
+The chain is hardened against reordering and concurrent writers: entries use a length-prefixed canonical encoding (hash version 2), and a committed anchor sidecar records the chain tail so a rewind past the anchor is detected. Writers take an exclusive file lock (`fs2`) around each append, so concurrent processes cannot interleave entries.
 
-All numbers were measured on this machine with the release binary; the rebuilt binary is byte-identical to the one measured above.
+Scope note: tamper evidence holds within a trusted checkout. The chain proves the ledger was not rewritten, not that the checkout itself is authentic. Cryptographic external anchoring is on the roadmap (Phase 3).
 
-## Why it matters
+</details>
 
-PolyForge is a single-format evidence ledger: one append-only Merkle chain, one tri-state
-entry model, one deterministic gate. The matrix below surveys the direct evidence-ledger and
-MCP tools found on 2026-08-09, plus three adjacent categories for context. Among the direct
-evidence-ledger tools surveyed, PolyForge is the only Rust crate-workspace observed; the
-rest are single-language or proprietary. Facts come from each project's public page; where
-a source is silent the cell reads `?`.
+<details>
+<summary><b>Comparison matrix (survey dated 2026-08-09)</b></summary>
+
+PolyForge is a single-format evidence ledger: one append-only Merkle chain, one tri-state entry model, one deterministic gate. The matrix below surveys the direct evidence-ledger and MCP tools found on 2026-08-09, plus three adjacent categories for context. Among the direct evidence-ledger tools surveyed, PolyForge is the only Rust crate-workspace observed; the rest are single-language or proprietary. Facts come from each project's public page; where a source is silent the cell reads `?`.
 
 | Feature | PolyForge | agent-gate | AttestMCP | AGA MCP | audit-ledger-mcp | Xiid | Zyvra | Omega | Observability | Provenance | Sandboxes |
 | ------- | --------- | ---------- | --------- | ------- | ---------------- | ---- | ----- | ------ | ------------- | ---------- | --------- |
@@ -409,8 +228,7 @@ a source is silent the cell reads `?`.
 | Hardware attestation | ❌ | ? | ? | ? | ? | ? | ? | ✅ | ? | ? | ? |
 | SaaS / hosted | ❌ | ? | ? | ? | ? | ? | ✅ | ? | ? | ? | ? |
 
-Legend: ✅ = feature confirmed by the cited source · ❌ = source explicitly states the
-feature is absent · `?` = source is silent (unknown).
+Legend: ✅ = feature confirmed by the cited source · ❌ = source explicitly states the feature is absent · `?` = source is silent (unknown).
 
 Sources (accessed 2026-08-09):
 
@@ -425,31 +243,43 @@ Sources (accessed 2026-08-09):
 9. `Provenance` — in-toto / Sigstore/cosign / Witness / SLSA — https://in-toto.io
 10. `Sandboxes` — e2b / Modal / Daytona — https://e2b.dev
 
-Taken together: among the direct evidence-ledger tools surveyed on 2026-08-09, PolyForge is
-the only Rust crate-workspace combining a single-format Merkle ledger, a deterministic gate,
-and an MCP interface in one workspace.
+Taken together: among the direct evidence-ledger tools surveyed on 2026-08-09, PolyForge is the only Rust crate-workspace combining a single-format Merkle ledger, a deterministic gate, and an MCP interface in one workspace.
 
-## Roadmap
+</details>
 
-Production-readiness path — full detail in [docs/ROADMAP.md](docs/ROADMAP.md). Priorities are
-driven by two constraints: attestations must be ungameable and reproducible (trust first), and
-PolyForge gates its own development (dogfooding).
+<details>
+<summary><b>Performance</b></summary>
 
-| Phase | What it unlocks | Key items |
-| ----- | --------------- | --------- |
-| 0 — Trust hardening + self-gating | Gates that cannot be gamed, on environments that cannot be faked | Mutation testing (`cargo-mutants`, Stryker), Nix/Devbox fingerprints, `polyforge-action` self-gating on this repo |
-| 1 — Adoption | PolyForge as a standard part of any team's workflow | `tensorov/polyforge-action` (published v1.0.0), featured MCP server + Computer Use, Python/TS toolrunner, "LazyForge" TUI, Cline/Aider/Cursor prompts |
-| 2 — Scale & observability | Fleets of hundreds of agents with evidence as first-class observability | Remote backend (PostgreSQL + S3/DynamoDB), web dashboard + REST/gRPC API, OpenTelemetry exporter, LangGraph/CrewAI/AutoGen middleware |
-| 3 — Enterprise & ecosystem | Gates that pass enterprise and regulated scrutiny | SLSA/in-toto/Sigstore, deep plugins (Cursor/Windsurf/Continue.dev), web human-in-the-loop, Policy-as-Code |
-| Moonshot backlog | Trust at the hardware level; attestations as a market | Verification marketplace, TEE / hardware attestations |
+Measured on the development machine with the release binary and a fresh ledger in `/tmp/pf-bench`; the rebuilt binary is byte-identical to the one measured:
+
+| Scenario | Value | How to reproduce |
+| -------- | ----- | ---------------- |
+| 100-task full chain (300 ledger appends) | 0.510 s | `time ( for i in $(seq 1 100); do polyforge-cli append model_claim "bench claim $i" --task task$i --commit c$i --diff d$i >/dev/null; polyforge-cli append tool_attestation "ran" --task task$i >/dev/null; polyforge-cli append validation "op" --task task$i >/dev/null; done )` |
+| 100 gate checks over a 300-entry ledger | 0.500 s | `time ( for i in $(seq 1 100); do polyforge-cli gate task$i --required validated >/dev/null; done )` |
+| Release binary size | 774664 B | `stat -c%s target/release/polyforge-cli` |
+| Full clean rebuild (`cargo clean` + `cargo build --release`) | 34.15 s | `cargo clean && time cargo build --release` |
+
+</details>
+
+<details>
+<summary><b>Roadmap</b></summary>
+
+Production-readiness path, full detail in [docs/ROADMAP.md](docs/ROADMAP.md). Priorities follow two constraints: attestations must be ungameable and reproducible (trust first), and PolyForge gates its own development (dogfooding).
+
+| Phase | Status | Key items |
+| ----- | ------ | --------- |
+| Phase 0: Trust hardening + self-gating | **Shipped** | Mutation testing (`cargo-mutants`, Stryker), Nix/Devbox fingerprints, `polyforge-action` self-gating on this repo |
+| Phase 1: Adoption | **Shipped** | [`tensorov/polyforge-action`](https://github.com/tensorov/polyforge-action) v1 published, Python/TS toolrunner, LazyForge TUI. Cline/Aider/Cursor prompts intentionally cut. |
+| Phase 2: Scale & observability | **Started** | OpenTelemetry/OTLP exporter subcommand exists. Next: remote backend (PostgreSQL + S3/DynamoDB), web dashboard + REST/gRPC API, LangGraph/CrewAI/AutoGen middleware |
+| Phase 3: Enterprise & ecosystem | Future | SLSA/in-toto/Sigstore, deep plugins (Cursor/Windsurf/Continue.dev), web human-in-the-loop, Policy-as-Code |
+| Moonshot backlog | Future | Verification marketplace, TEE / hardware attestations |
+
+</details>
 
 ## License
 
-PolyForge is licensed under the [Apache License, Version 2.0](LICENSE). See the
-[NOTICE](NOTICE) file for attribution requirements.
+PolyForge is licensed under the [Apache License, Version 2.0](LICENSE). See the [NOTICE](NOTICE) file for attribution requirements.
 
 ## Contributing
 
-Before opening an issue, please read [SECURITY.md](SECURITY.md) for how to report
-vulnerabilities. Feature and bug reports use the templates under
-[`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/).
+Before opening an issue, please read [SECURITY.md](SECURITY.md) for how to report vulnerabilities. Feature and bug reports use the templates under [.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/).

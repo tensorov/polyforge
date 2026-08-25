@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="520" viewBox="0 0 1200 520"
+     role="img" aria-labelledby="hero-title hero-desc">
+  <title id="hero-title">PolyForge hero</title>
+  <desc id="hero-desc">PolyForge - журнал доказательств с защитой от подделки для агентных запусков инструментов. Слева: заголовок с mono-чипами (rust, merkle-chain, mcp, tui) и мотив Merkle-цепи. Справа: терминал с демо polyforge-cli init, append model_claim, append tool_attestation и gate demo, завершающимся строкой gate PASSED for task demo.</desc>
+
+  <!-- Canvas board (outermost, radius 12 per tokens) -->
+  <rect x="0" y="0" width="1200" height="520" rx="12" fill="#0a0a0a"/>
+
+  <!-- ==================== Title block (left) ==================== -->
+  <g id="title-block">
+    <g font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif">
+      <text id="title-text" x="48" y="150" font-size="84" font-weight="700" fill="#EDEBE0">PolyForge</text>
+      <text id="promise-text" x="48" y="196" font-size="23" font-weight="400" fill="#9B9690">Превращайте заявления ИИ в факты</text>
+    </g>
+
+    <!-- Capability chips (mono, hairline-bordered) -->
+    <g id="tag-chips" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="20" fill="#EDEBE0">
+      <g id="chip-1">
+        <rect x="48" y="216" width="64" height="32" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+        <text x="56" y="238">rust</text>
+      </g>
+      <g id="chip-2">
+        <rect x="124" y="216" width="161" height="32" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+        <text x="132" y="238">merkle-chain</text>
+      </g>
+      <g id="chip-3">
+        <rect x="297" y="216" width="52" height="32" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+        <text x="305" y="238">mcp</text>
+      </g>
+      <g id="chip-4">
+        <rect x="361" y="216" width="56" height="32" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+        <text x="369" y="238">tui</text>
+      </g>
+    </g>
+
+    <!-- Merkle chain motif (each append = a linked node) -->
+    <g id="merkle-links">
+      <g fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1">
+        <path id="connector-1" d="M84 298 L116 298"/>
+        <path id="connector-2" d="M152 298 L184 298"/>
+      </g>
+      <rect id="chain-node-1" x="48" y="280" width="36" height="36" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+      <rect id="chain-node-2" x="116" y="280" width="36" height="36" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+      <rect id="chain-node-3" x="184" y="280" width="36" height="36" rx="4" fill="#FF6A3D" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+      <g id="chain-labels" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18" fill="#9B9690" text-anchor="middle">
+        <text id="e-label-1" x="66" y="344">e1</text>
+        <text id="e-label-2" x="134" y="344">e2</text>
+        <text id="e-label-3" x="202" y="344">e3</text>
+      </g>
+      <text id="chain-caption" x="48" y="384" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="20" fill="#9B9690">каждая запись - звено цепи</text>
+    </g>
+  </g>
+
+  <!-- ==================== Proof terminal (right) ==================== -->
+  <g id="proof-terminal">
+    <rect x="472" y="56" width="680" height="304" rx="8" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+
+    <!-- Terminal chrome -->
+    <g id="terminal-chrome">
+      <g fill="#9B9690">
+        <circle cx="492" cy="74" r="4"/>
+        <circle cx="508" cy="74" r="4"/>
+        <circle cx="524" cy="74" r="4"/>
+      </g>
+      <text id="terminal-title" x="544" y="80" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="16" fill="#9B9690">polyforge-cli</text>
+      <line x1="472" y1="92" x2="1152" y2="92" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+    </g>
+
+    <g font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18">
+      <text id="line-1" x="492" y="128" fill="#EDEBE0">$ polyforge-cli init</text>
+      <text id="line-2" x="492" y="155" fill="#9B9690">created ledger at /tmp/pf-beautify/ledger.jsonl</text>
+      <text id="line-3" x="492" y="182" fill="#EDEBE0">$ polyforge-cli append model_claim &quot;claim datum&quot; --task demo</text>
+      <text id="line-4" x="492" y="209" fill="#9B9690">appended entry 0</text>
+      <text id="line-5" x="492" y="236" fill="#EDEBE0">$ polyforge-cli append tool_attestation &quot;ran&quot; --task demo</text>
+      <text id="line-6" x="492" y="263" fill="#9B9690">appended entry 1</text>
+      <text id="line-7" x="492" y="290" fill="#EDEBE0">$ polyforge-cli gate demo --required verified</text>
+      <g id="pass-line">
+        <text id="line-8" x="492" y="317" font-size="22" fill="#E8A75B">gate PASSED for task demo</text>
+      </g>
+    </g>
+  </g>
+</svg>

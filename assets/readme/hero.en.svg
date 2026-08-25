@@ -11,7 +11,7 @@
   <g id="title-block">
     <g font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif">
       <text id="title-text" x="48" y="150" font-size="84" font-weight="700" fill="#EDEBE0">PolyForge</text>
-      <text id="promise-text" x="48" y="196" font-size="28" font-weight="400" fill="#9B9690">From model claim to verified fact</text>
+      <text id="promise-text" x="48" y="196" font-size="28" font-weight="400" fill="#9B9690">Make every AI claim provable</text>
     </g>
 
     <!-- Capability chips (mono, hairline-bordered) -->
@@ -29,8 +29,8 @@
         <text x="305" y="238">mcp</text>
       </g>
       <g id="chip-4">
-        <rect x="361" y="216" width="88" height="32" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
-        <text x="369" y="238">pf-cli</text>
+        <rect x="361" y="216" width="56" height="32" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+        <text x="369" y="238">tui</text>
       </g>
     </g>
 

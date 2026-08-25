@@ -1,48 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg"
-     width="1100" height="640" viewBox="0 0 1100 640"
+     width="1200" height="420" viewBox="0 0 1200 420"
      role="img" aria-labelledby="cli-demo-title cli-demo-desc">
   <title id="cli-demo-title">PolyForge CLI demo</title>
-  <desc id="cli-demo-desc">Terminal session running the PolyForge quick start: polyforge-cli init creates the ledger, append model_claim records a claim, append tool_attestation promotes it to Verified, ledger tail prints the 64-hex SHA-256 tail hash, and gate demo --required verified passes.</desc>
+  <desc id="cli-demo-desc">Terminal session running the PolyForge quick start: PF_LEDGER is exported, polyforge-cli init creates the ledger, append model_claim records a claim, append tool_attestation promotes it to Verified, and gate demo --required verified passes.</desc>
 
   <!-- Canvas board (outermost, radius 12 per tokens) -->
-  <rect x="0" y="0" width="1100" height="640" rx="12" fill="#0a0a0a"/>
+  <rect x="0" y="0" width="1200" height="420" rx="12" fill="#0a0a0a"/>
 
   <!-- ==================== Terminal window ==================== -->
   <g id="terminal-window">
-    <rect x="40" y="40" width="1000" height="500" rx="8" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+    <rect x="200" y="48" width="800" height="340" rx="8" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
 
     <!-- Terminal chrome -->
     <g id="terminal-chrome">
       <g fill="#9B9690">
-        <circle cx="64" cy="74" r="4"/>
-        <circle cx="80" cy="74" r="4"/>
-        <circle cx="96" cy="74" r="4"/>
+        <circle cx="220" cy="66" r="4"/>
+        <circle cx="236" cy="66" r="4"/>
+        <circle cx="252" cy="66" r="4"/>
       </g>
-      <text id="terminal-title" x="110" y="80" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="16" fill="#9B9690">polyforge-cli — zsh</text>
-      <line x1="40" y1="92" x2="1040" y2="92" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+      <text id="terminal-title" x="272" y="72" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="16" fill="#9B9690">polyforge-cli</text>
+      <line x1="200" y1="84" x2="1000" y2="84" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
     </g>
 
     <!-- Terminal body -->
-    <g font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="20">
-      <text id="line-1" x="64" y="128" fill="#EDEBE0">$ polyforge-cli init</text>
-      <text id="line-2" x="64" y="154" fill="#9B9690">created ledger at /tmp/pf-demo/ledger.jsonl</text>
-      <text id="line-3" x="64" y="180" fill="#EDEBE0">$ polyforge-cli append model_claim &quot;claim datum&quot; --task demo \</text>
-      <text id="line-4" x="84" y="206" fill="#EDEBE0">--commit abc123 --diff d1</text>
-      <text id="line-5" x="64" y="232" fill="#9B9690">appended entry 0</text>
-      <text id="line-6" x="64" y="258" fill="#EDEBE0">$ polyforge-cli append tool_attestation &quot;ran&quot; --task demo</text>
-      <text id="line-7" x="64" y="284" fill="#9B9690">appended entry 1</text>
-      <text id="line-8" x="64" y="310" fill="#EDEBE0">$ polyforge-cli ledger tail</text>
-      <text id="line-9" x="64" y="336" fill="#4AF626">5a1443679de063d667176b0cd9c33201ccd95742816e078b9a24ae430ba7a2e9</text>
-      <text id="line-10" x="64" y="362" fill="#EDEBE0">$ polyforge-cli gate demo --required verified</text>
-      <text id="line-11" x="64" y="388" font-size="22" font-weight="600" fill="#E8A75B">gate PASSED for task demo</text>
+    <g font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18">
+      <text id="line-1" x="224" y="124" fill="#EDEBE0">$ export PF_LEDGER=/tmp/pf-demo/ledger.jsonl</text>
+      <text id="line-2" x="224" y="151" fill="#EDEBE0">$ polyforge-cli init</text>
+      <text id="line-3" x="224" y="178" fill="#9B9690">created ledger at /tmp/pf-demo/ledger.jsonl</text>
+      <text id="line-4" x="224" y="205" fill="#EDEBE0">$ polyforge-cli append model_claim &quot;claim datum&quot; --task demo \</text>
+      <text id="line-5" x="244" y="232" fill="#EDEBE0">--commit abc123 --diff d1</text>
+      <text id="line-6" x="224" y="259" fill="#9B9690">appended entry 0</text>
+      <text id="line-7" x="224" y="286" fill="#EDEBE0">$ polyforge-cli append tool_attestation &quot;ran&quot; --task demo</text>
+      <text id="line-8" x="224" y="313" fill="#9B9690">appended entry 1</text>
+      <text id="line-9" x="224" y="340" fill="#EDEBE0">$ polyforge-cli gate demo --required verified</text>
+      <g id="pass-line">
+        <text id="line-10" x="224" y="367" font-size="22" fill="#E8A75B">gate PASSED for task demo</text>
+      </g>
     </g>
-  </g>
-
-  <!-- ==================== Footnote band ==================== -->
-  <g id="footnote" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif">
-    <rect x="40" y="556" width="1000" height="64" rx="8" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
-    <rect x="64" y="568" width="12" height="12" rx="4" fill="#FF6A3D"/>
-    <text x="88" y="582" font-size="20" font-weight="600" fill="#EDEBE0">the real 64-hex SHA-256 tail hash, printed by the binary</text>
-    <text x="88" y="608" font-size="18" fill="#9B9690">every append commits to the previous hash — tamper with one byte and the chain breaks.</text>
   </g>
 </svg>

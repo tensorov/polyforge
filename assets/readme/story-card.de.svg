@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1200" height="360" viewBox="0 0 1200 360"
+     role="img" aria-labelledby="sc-title sc-desc">
+  <title id="sc-title">PolyForge in drei Schritten</title>
+  <desc id="sc-desc">Drei Schritte: Der Agent protokolliert seine Arbeit, nur ein echter Tool-Lauf bestätigt es, Merge nur mit Nachweis in der Kette.</desc>
+
+  <!-- Canvas board (radius 12 per tokens) -->
+  <rect x="0" y="0" width="1200" height="360" rx="12" fill="#0a0a0a"/>
+
+  <!-- Headline -->
+  <text x="56" y="72" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="38" font-weight="700" fill="#EDEBE0">KI-Agenten sagen „fertig“. PolyForge macht es beweisbar.</text>
+
+  <!-- Panels -->
+  <rect x="56" y="110" width="344" height="210" rx="8" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+  <rect x="428" y="110" width="344" height="210" rx="8" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+  <rect x="800" y="110" width="344" height="210" rx="8" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+
+  <!-- Connectors -->
+  <line x1="400" y1="215" x2="424" y2="215" stroke="#9B9690" stroke-width="2"/>
+  <polygon points="424,215 416,211 416,219" fill="#9B9690"/>
+  <line x1="772" y1="215" x2="796" y2="215" stroke="#9B9690" stroke-width="2"/>
+  <polygon points="796,215 788,211 788,219" fill="#9B9690"/>
+
+  <!-- Panel 1: ANSPRUCH -->
+  <g id="panel-1">
+    <text x="76" y="150" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18" fill="#FF6A3D">01</text>
+    <text x="76" y="184" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="26" font-weight="700" fill="#EDEBE0">ANSPRUCH</text>
+    <g font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="18" fill="#9B9690">
+      <text x="76" y="214">Der Agent protokolliert</text>
+      <text x="76" y="240">seine Arbeit</text>
+    </g>
+    <rect x="76" y="272" width="130" height="30" rx="4" fill="#0a0a0a" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+    <text x="88" y="292" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="16" fill="#E8A75B">model_claim</text>
+  </g>
+
+  <!-- Panel 2: NACHWEIS -->
+  <g id="panel-2">
+    <text x="448" y="150" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18" fill="#FF6A3D">02</text>
+    <text x="448" y="184" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="26" font-weight="700" fill="#EDEBE0">NACHWEIS</text>
+    <g font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="18" fill="#9B9690">
+      <text x="448" y="214">Nur ein echter Tool-Lauf</text>
+      <text x="448" y="240">bestätigt es</text>
+    </g>
+    <rect x="448" y="272" width="170" height="30" rx="4" fill="#0a0a0a" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+    <text x="460" y="292" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="16" fill="#E8A75B">tool_attestation</text>
+  </g>
+
+  <!-- Panel 3: GATE -->
+  <g id="panel-3">
+    <text x="820" y="150" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18" fill="#FF6A3D">03</text>
+    <text x="820" y="184" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="26" font-weight="700" fill="#EDEBE0">GATE</text>
+    <g font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="18" fill="#9B9690">
+      <text x="820" y="214">Merge nur mit Nachweis</text>
+      <text x="820" y="240">in der Kette</text>
+    </g>
+    <rect x="820" y="272" width="130" height="30" rx="4" fill="#0a0a0a" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+    <text x="832" y="292" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="16" fill="#E8A75B">gate PASSED</text>
+  </g>
+</svg>

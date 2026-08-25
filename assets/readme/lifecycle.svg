@@ -7,12 +7,6 @@
   <!-- Canvas board -->
   <rect x="0" y="0" width="1200" height="400" rx="12" fill="#0a0a0a"/>
 
-  <!-- ============ Title block ============ -->
-  <g id="title-block" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif">
-    <text x="48" y="84" font-size="26" font-weight="600" fill="#EDEBE0">Evidence lifecycle</text>
-    <text x="48" y="112" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18" fill="#9B9690">tri-state evidence · append-only merkle chain</text>
-  </g>
-
   <!-- ============ State nodes (chain backbone) ============ -->
   <!-- ModelClaimed -->
   <rect x="48" y="140" width="228" height="72" rx="4" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
@@ -44,23 +38,12 @@
   <g text-anchor="middle">
     <!-- tool_attestation: ModelClaimed -> Verified -->
     <text x="381" y="164" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18" fill="#EDEBE0">tool_attestation</text>
-    <text x="381" y="198" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="18" fill="#9B9690">tool promotion</text>
     <!-- validation: Verified -> Validated -->
     <text x="819" y="164" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18" fill="#EDEBE0">validation</text>
-    <text x="819" y="198" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="18" fill="#9B9690">validation → operator</text>
   </g>
 
   <!-- ============ ModelClaimed annotation ============ -->
   <g text-anchor="middle">
     <text x="162" y="244" font-family="ui-monospace, &quot;Cascadia Code&quot;, &quot;JetBrains Mono&quot;, &quot;SF Mono&quot;, Menlo, Consolas, monospace" font-size="18" fill="#EDEBE0">model_claim</text>
-    <text x="162" y="272" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif" font-size="16" fill="#9B9690">model can only append claim</text>
-  </g>
-
-  <!-- ============ Footnote band: models can never self-produce Verified ============ -->
-  <g id="footnote" font-family="-apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif">
-    <rect x="48" y="286" width="1104" height="60" rx="8" fill="#16130f" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
-    <rect x="72" y="297" width="12" height="12" rx="4" fill="#FF6A3D"/>
-    <text x="96" y="310" font-size="20" font-weight="600" fill="#EDEBE0">models can never self-produce Verified</text>
-    <text x="96" y="338" font-size="18" fill="#9B9690">only an allowlisted tool attestation promotes a ModelClaimed to Verified — the MCP server accepts ModelClaim only.</text>
   </g>
 </svg>
