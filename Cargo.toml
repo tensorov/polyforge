@@ -6,6 +6,7 @@ members = [
     "crates/polyforge-mcp",
     "crates/polyforge-cli",
     "crates/polyforge-tui",
+    "crates/polyforge-attest",
 ]
 
 [workspace.package]
