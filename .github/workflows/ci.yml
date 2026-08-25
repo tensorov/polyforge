@@ -219,7 +219,6 @@ jobs:
         run: cosign sign-blob --yes --bundle /tmp/anchor-pub.bundle /tmp/chain-statement.json
         env:
           HTTPS_PROXY: http://127.0.0.1:9
-          https_proxy: http://127.0.0.1:9
 
       - name: Extract publication record from bundle
         run: |
