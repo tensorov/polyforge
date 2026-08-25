@@ -34,7 +34,7 @@ jobs:
       - name: PolyForge self-gate
         uses: tensorov/polyforge-action@v1
         with:
-          task-id: bootstrap
+          task-id: impossible-task-probe
           required: verified
 
   coverage:
