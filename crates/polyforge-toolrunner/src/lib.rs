@@ -7,10 +7,14 @@
 //! through an allowlisted tool run (see [`runner`] and [`verify`]).
 
 pub mod runner;
+#[cfg(feature = "sandbox-mock")]
+pub mod sandbox_mock;
 pub mod verify;
 
 pub use runner::{
     allowlist, env_fingerprint, init_executor, lookup, parse_timeout, run, run_with_timeout, spawn,
     ExecutorKind, RunOutput, RunnerError, Tool, DEFAULT_TOOL_TIMEOUT_SECS, PF_TOOL_TIMEOUT_SECS,
 };
+#[cfg(feature = "sandbox-mock")]
+pub use sandbox_mock::{executor_digest, MockSandboxExecutor, MOCK_IMAGE_ID};
 pub use verify::verify_and_append;

@@ -240,6 +240,11 @@ pub(crate) trait Executor {
     /// Run an allowlisted tool to completion under the configured wall-clock
     /// budget. Contract is byte-identical to the free [`run`] function.
     fn run(&self, tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError>;
+    /// Backend identity label ("process", "sandbox-mock"). Diagnostics and
+    /// dispatch tests only; never recorded in attestations. Test-only
+    /// accessor, hence the blanket dead-code allowance.
+    #[allow(dead_code)]
+    fn label(&self) -> &'static str;
 }
 
 /// The process backend: spawns the canonical allowlisted binary directly via
@@ -253,10 +258,22 @@ impl Executor for ProcessExecutor {
     fn run(&self, tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
         run_with_timeout(tool, args, parse_timeout())
     }
+
+    fn label(&self) -> &'static str {
+        "process"
+    }
 }
 
 /// Singleton instance of the process backend handed out by [`executor`].
 static PROCESS_EXECUTOR: ProcessExecutor = ProcessExecutor;
+
+#[cfg(feature = "sandbox-mock")]
+use crate::sandbox_mock::MockSandboxExecutor;
+
+/// Singleton instance of the mock sandbox backend handed out by [`executor`]
+/// when a Sandbox selection is recorded in a `sandbox-mock` build.
+#[cfg(feature = "sandbox-mock")]
+static SANDBOX_MOCK_EXECUTOR: MockSandboxExecutor = MockSandboxExecutor;
 
 /// Which execution backend attestations run under.
 ///
@@ -329,29 +346,53 @@ fn selected_executor_kind() -> ExecutorKind {
     }
 }
 
-/// Module-level accessor returning the selected execution backend. The
-/// selection is fixed by [`init_executor`]; the default is the process
-/// backend. A recorded Sandbox selection maps to the process backend until
-/// T10 supplies the mock singleton; in practice that state is unreachable
-/// without the feature because init rejects Sandbox before writing it.
-pub(crate) fn executor() -> &'static dyn Executor {
-    match selected_executor_kind() {
+/// Backend for a given selection kind, independent of process-global state.
+///
+/// Pure so tests can prove the Sandbox-to-mock wiring without flipping the
+/// set-once [`EXECUTOR_KIND`] global (which can never be reset and would
+/// make parallel test outcomes order-dependent).
+pub(crate) fn executor_for_kind(kind: ExecutorKind) -> &'static dyn Executor {
+    match kind {
         ExecutorKind::Process => &PROCESS_EXECUTOR,
+        #[cfg(feature = "sandbox-mock")]
+        ExecutorKind::Sandbox => &SANDBOX_MOCK_EXECUTOR,
+        // Unreachable in practice: without the feature init_executor rejects
+        // a Sandbox selection before any state is written. The defensive
+        // fallback keeps the process backend, never a panic.
+        #[cfg(not(feature = "sandbox-mock"))]
         ExecutorKind::Sandbox => &PROCESS_EXECUTOR,
     }
 }
 
-/// Record-only executor identity for attestation payloads: `None` for the
+/// Record-only executor identity for a given selection kind: `None` for the
 /// process backend (legacy payloads stay byte-identical, no metadata key),
-/// `Some(digest)` only when a non-process executor performed the run. The
-/// mock sandbox backend arrives in T10; until then every compiled
-/// configuration reports None, so attestations never claim an executor they
-/// did not use.
-pub(crate) fn active_executor_digest() -> Option<String> {
-    match selected_executor_kind() {
+/// `Some(digest)` only when a non-process executor performed the run.
+pub(crate) fn executor_digest_for_kind(kind: ExecutorKind) -> Option<String> {
+    match kind {
         ExecutorKind::Process => None,
+        #[cfg(feature = "sandbox-mock")]
+        ExecutorKind::Sandbox => Some(crate::sandbox_mock::executor_digest()),
+        #[cfg(not(feature = "sandbox-mock"))]
         ExecutorKind::Sandbox => None,
     }
+}
+
+/// Module-level accessor returning the selected execution backend. The
+/// selection is fixed by [`init_executor`]; the default is the process
+/// backend. In a `sandbox-mock` build a recorded Sandbox selection maps to
+/// [`MockSandboxExecutor`]; without the feature that state is unreachable
+/// because init rejects Sandbox before writing it, and the mapping falls
+/// back defensively to the process backend.
+pub(crate) fn executor() -> &'static dyn Executor {
+    executor_for_kind(selected_executor_kind())
+}
+
+/// Record-only executor identity for attestation payloads: `None` for the
+/// process backend (legacy payloads stay byte-identical, no metadata key),
+/// `Some(digest)` only when a non-process executor performed the run, so
+/// attestations never claim an executor they did not use.
+pub(crate) fn active_executor_digest() -> Option<String> {
+    executor_digest_for_kind(selected_executor_kind())
 }
 
 /// Run an allowlisted tool to completion and capture its output + attestation
@@ -397,7 +438,7 @@ pub fn run_with_timeout(
 
 /// Attested exit code: the child's numeric status when it exited normally,
 /// or -1 when it was killed by a signal (`status.code() == None`).
-fn exit_code_of(status: std::process::ExitStatus) -> i32 {
+pub(crate) fn exit_code_of(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(-1)
 }
 
@@ -526,7 +567,7 @@ fn denied_arg(tool: &str, arg: &str) -> bool {
 /// then the eslint --format value rule (custom formatter paths are
 /// loadable JS). Slice-level so `--format <value>` can be inspected as a
 /// pair.
-fn validate_tool_args(tool: &str, args: &[String]) -> Result<(), RunnerError> {
+pub(crate) fn validate_tool_args(tool: &str, args: &[String]) -> Result<(), RunnerError> {
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -778,14 +819,14 @@ fn candidate_roots(base: &Path) -> Vec<PathBuf> {
 }
 
 /// Resolve a tool's version by running `<bin> --version`.
-fn tool_version(bin: &PathBuf) -> String {
+pub(crate) fn tool_version(bin: &PathBuf) -> String {
     match Command::new(bin).arg("--version").output() {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => format!("unknown-{}", bin.display()),
     }
 }
 
-fn command_string(tool: &Tool, args: &[String]) -> String {
+pub(crate) fn command_string(tool: &Tool, args: &[String]) -> String {
     let mut parts = vec![tool.bin.display().to_string()];
     parts.extend(tool.args.iter().cloned());
     parts.extend(args.iter().cloned());
@@ -1595,17 +1636,24 @@ mod tests {
 
     // ---- T9 executor selection seam ----
     //
-    // All writers below may only ever record KIND_PROCESS in this build
-    // (Sandbox is rejected before any state write), so these tests are
-    // race-free under cargo's parallel test runner: concurrent Process
-    // selections are idempotent by design.
+    // Feature-off builds: every writer below can only ever record
+    // KIND_PROCESS (Sandbox is rejected before any state write), so these
+    // tests are race-free under cargo's parallel test runner. Feature-on
+    // (`sandbox-mock`) builds exclude this trio entirely: a Sandbox
+    // selection here would permanently flip the set-once EXECUTOR_KIND
+    // global and make every other test's backend order-dependent. The
+    // feature-on wiring is proven instead by sandbox_dispatch_tests below,
+    // which drives the pure per-kind dispatchers without touching the
+    // global.
 
+    #[cfg(not(feature = "sandbox-mock"))]
     #[test]
     fn selection_defaults_to_process_without_init() {
         assert_eq!(selected_executor_kind(), ExecutorKind::Process);
         assert!(active_executor_digest().is_none());
     }
 
+    #[cfg(not(feature = "sandbox-mock"))]
     #[test]
     fn init_executor_process_is_idempotent() {
         init_executor(ExecutorKind::Process).expect("first process selection");
@@ -1616,6 +1664,7 @@ mod tests {
     /// Feature-gate failure mode: selecting Sandbox without `sandbox-mock`
     /// must fail with the exact gate message and leave the selection
     /// untouched (no silent fallback to a half-initialized state).
+    #[cfg(not(feature = "sandbox-mock"))]
     #[test]
     fn init_executor_sandbox_requires_feature() {
         match init_executor(ExecutorKind::Sandbox) {
@@ -1651,5 +1700,85 @@ mod tests {
     #[test]
     fn process_backend_yields_no_executor_digest() {
         assert_eq!(active_executor_digest(), None);
+    }
+
+    // ---- T10 mock sandbox dispatch ----
+    //
+    // Feature-on only. Drives the PURE per-kind dispatchers so the set-once
+    // EXECUTOR_KIND global is never written by any test in this binary;
+    // outcomes are therefore order-independent under cargo's parallel
+    // runner in both feature configurations.
+
+    #[cfg(feature = "sandbox-mock")]
+    mod sandbox_dispatch_tests {
+        use super::*;
+        use crate::sandbox_mock::{executor_digest, MOCK_IMAGE_ID};
+
+        #[test]
+        fn sandbox_kind_dispatches_to_mock_backend() {
+            assert_eq!(executor_for_kind(ExecutorKind::Process).label(), "process");
+            assert_eq!(
+                executor_for_kind(ExecutorKind::Sandbox).label(),
+                "sandbox-mock"
+            );
+        }
+
+        #[test]
+        fn executor_digest_follows_kind_not_globals() {
+            assert_eq!(executor_digest_for_kind(ExecutorKind::Process), None);
+            let digest = executor_digest();
+            assert_eq!(digest.len(), 16, "digest is the first 16 hex chars");
+            assert!(
+                digest.bytes().all(|b| b.is_ascii_hexdigit()),
+                "digest must be hex: {digest}"
+            );
+            assert_eq!(
+                executor_digest_for_kind(ExecutorKind::Sandbox),
+                Some(digest)
+            );
+        }
+
+        /// Digest derivation guard: fixed string derived from the stub image
+        /// id via sha256 first 16 hex, byte-stable across calls.
+        #[test]
+        fn digest_is_sha256_prefix_of_stub_image_id() {
+            let expected = sha256_hex(MOCK_IMAGE_ID.as_bytes())[..16].to_string();
+            assert_eq!(executor_digest(), expected);
+            assert_eq!(executor_digest(), executor_digest());
+        }
+
+        #[test]
+        fn mock_backend_runs_allowlisted_tool_through_dispatch() {
+            let t = lookup("cargo --version").expect("tool on allowlist");
+            let out = executor_for_kind(ExecutorKind::Sandbox)
+                .run(&t, &[])
+                .expect("mock backend run");
+            assert_eq!(out.exit_code, 0);
+            assert!(String::from_utf8_lossy(&out.stdout).contains("cargo"));
+        }
+
+        /// Mirrors the verify.rs wiring exactly: a Some(digest) from the
+        /// non-process backend becomes eval_metadata {"executor_digest"} on
+        /// the attestation; the process backend contributes nothing.
+        #[test]
+        fn digest_lands_in_attestation_metadata_shape() {
+            let t = lookup("cargo --version").expect("tool on allowlist");
+            let out = executor_for_kind(ExecutorKind::Sandbox)
+                .run(&t, &[])
+                .expect("mock backend run");
+            let mut attestation = out.to_attestation("T10", "abc", "diff", "ts");
+            assert!(attestation.eval_metadata.is_none());
+            if let Some(digest) = executor_digest_for_kind(ExecutorKind::Sandbox) {
+                attestation.eval_metadata = Some(serde_json::json!({ "executor_digest": digest }));
+            }
+            let meta = attestation
+                .eval_metadata
+                .expect("sandbox must set metadata");
+            assert_eq!(
+                meta["executor_digest"].as_str(),
+                Some(executor_digest().as_str())
+            );
+            assert_eq!(executor_digest_for_kind(ExecutorKind::Process), None);
+        }
     }
 }
