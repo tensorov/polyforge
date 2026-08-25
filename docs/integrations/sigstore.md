@@ -116,6 +116,34 @@ sha256sum expected-tail.txt "$(find /tmp/anchor -name tail.txt)"
 in is exactly the state CI anchored. Any mismatch means your checkout diverged from the
 signed run (or was rewritten); treat it as untrusted until explained.
 
+## Verifying transparency
+
+Cosign enforces transparency by default: every `verify-blob` invocation that receives a
+`--bundle` checks that the bundle's `verificationMaterial` contains a Rekor
+transparency-log entry with a valid inclusion proof, and fails closed when it does not.
+No extra flags are required for the strict posture; it is exactly the step 3 command
+above, which prints `Verified OK` only after the inclusion proof verifies against the
+public append-only log.
+
+There are two consumer postures, and this guide already carries both as command variants
+rather than separate flows, so they are cross-referenced here instead of duplicated:
+
+| Posture          | Flag                    | Where documented                              | What it accepts                                                     |
+| ---------------- | ----------------------- | --------------------------------------------- | ------------------------------------------------------------------- |
+| Strict (default) | none                    | Step 3 tlog-backed command                    | Signature plus verified Rekor inclusion proof; signing time from the log |
+| Lax              | `--insecure-ignore-tlog` | [The tlog-independent variant](#the-tlog-independent-variant-and-why-it-expires) | Signature only; no transparency-log trust, certificate checked against the current clock |
+
+The lax posture inherits the minutes-long expiry window explained in the variant section;
+this page does not repeat that analysis. Fail-closed behavior was exercised during
+authoring: stripping the `tlogEntries` key from a copy of a real bundle and rerunning the
+strict command exits 1 with `failed to verify log inclusion: not enough verified log
+entries from transparency log: 0 < 1`.
+
+One sentence ties the model together: a bundle whose `verificationMaterial` contains a
+`tlogEntries` entry with an inclusion proof is ANCHORED, its absence means the bundle is
+UNANCHORED, and accepting an UNANCHORED bundle is the consumer's policy decision (see the
+policy section below).
+
 ## The tlog-independent variant, and why it expires
 
 Some policies prefer verification without any transparency-log trust. Cosign supports
@@ -146,6 +174,43 @@ evidence that a ledger state existed at a specific point in time. PolyForge trea
 UNANCHORED bundles as no anchor at all. Accepting one is the consumer's explicit
 choice: if your process admits them, record that decision in your own policy, because
 the default reading of this guide is that only tlog-backed verification counts.
+
+## The publication record: anchor-publication.json
+
+Besides the per-run `anchor-<run_id>` artifact, the `publish-anchor` CI job signs the
+`polyforge-attest` chain statement and uploads a small JSON record as the
+`anchor-publication` artifact. The record is a pointer into durable storage: it names the
+Rekor log entry so a consumer can resolve the anchored state from the transparency log
+alone.
+
+| Key             | Type    | Meaning                                                          |
+| --------------- | ------- | ---------------------------------------------------------------- |
+| `tail_hash`     | string  | 64-hex SHA-256 tail of the ledger Merkle chain at CI time         |
+| `bundle_sha256` | string  | SHA-256 of the signed statement bundle produced by the job        |
+| `rekor_index`   | integer | Rekor transparency-log index of the signed entry                  |
+| `run_id`        | string  | GitHub Actions run id that produced the record                    |
+
+### Artifact expiry and recovery
+
+What survives forever: the Rekor entry itself. Once `cosign sign-blob` completes its
+default upload, the transparency-log entry is public, append-only, and permanently
+resolvable by `rekor_index`; verification against it never depends on GitHub retention.
+
+What expires: the GitHub artifacts. Both `anchor-<run_id>` and `anchor-publication`
+follow the repository's artifact retention window (about 90 days), after which
+`gh run download` reports not found even though every underlying signature stays
+verifiable on the log.
+
+Recovery procedure when an artifact has expired:
+
+```sh
+gh run list --workflow CI
+gh run download <run-id> -n anchor-publication
+```
+
+Pick the newest green run for a push to `master`; the downloaded record supplies
+`tail_hash`, `bundle_sha256`, and `rekor_index`, which is everything needed to confirm
+against Rekor that the anchored ledger state existed, independent of artifact retention.
 
 ## Troubleshooting
 
@@ -186,4 +251,11 @@ workspace CLI at repo HEAD. Results:
    failed verification with exit 1 (`invalid character '\u0084' looking for beginning
    of value`).
 
-Full transcript: `.omo/evidence/task-2-polyforge-oss-trust-stack.txt`.
+Wave T7 (transparency postures and publication record) re-executed the step 3 default
+posture against the same run 32843338905 bundle in `/tmp/anchor` with cosign v3.1.3:
+`Verified OK`, exit 0. The failure path stripped `verificationMaterial.tlogEntries` from
+a JSON copy and reran the strict command: exit 1, `failed to verify log inclusion: not
+enough verified log entries from transparency log: 0 < 1`.
+
+Full transcript: `.omo/evidence/task-2-polyforge-oss-trust-stack.txt` (T2) and
+`.omo/evidence/task-7-polyforge-oss-trust-stack.txt` (T7).
