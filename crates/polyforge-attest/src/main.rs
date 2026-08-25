@@ -119,10 +119,10 @@ fn cmd_chain(args: &[String]) -> Result<ExitCode, String> {
     let payload = statement_json(&emit_chain_statement(&entries))?;
     match out {
         Some(path) => {
-            let envelope = DsseEnvelope::new(BASE64_STANDARD.encode(payload.as_bytes()), Vec::new());
+            let envelope =
+                DsseEnvelope::new(BASE64_STANDARD.encode(payload.as_bytes()), Vec::new());
             let text = statement_json(&envelope)?;
-            std::fs::write(path, text)
-                .map_err(|e| format!("write envelope {path}: {e}"))?;
+            std::fs::write(path, text).map_err(|e| format!("write envelope {path}: {e}"))?;
             eprintln!("wrote DSSE envelope to {path}");
             Ok(ExitCode::SUCCESS)
         }
@@ -266,8 +266,7 @@ mod tests {
         let raw = std::fs::read_to_string(&out_path).expect("read envelope");
         let v: serde_json::Value = serde_json::from_str(&raw).expect("envelope parses");
         assert_eq!(
-            v["payloadType"],
-            "application/vnd.in-toto+json",
+            v["payloadType"], "application/vnd.in-toto+json",
             "payloadType must be pinned"
         );
         assert_eq!(v["signatures"], serde_json::json!([]), "unsigned envelope");

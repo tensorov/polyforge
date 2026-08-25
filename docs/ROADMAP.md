@@ -68,7 +68,7 @@ ledger automatically.
 
 | # | Task | Why |
 |---|------|-----|
-| 3.1 | SLSA / in-toto / Sigstore compatibility | Entry into enterprise and regulated environments. |
+| 3.1 | SLSA / in-toto / Sigstore compatibility (in progress: CI anchoring + in-toto export shipped) | Entry into enterprise and regulated environments. |
 | 3.2 | Deep plugins: Cursor, Windsurf, Continue.dev (native, not via MCP shim) | Deeper integration = higher convenience. |
 | 3.3 | Web version of the human-in-the-loop validation | People are not always in a terminal. |
 | 3.4 | Policy-as-Code for verification rules | Which tests are mandatory for which task types — configurable. |
