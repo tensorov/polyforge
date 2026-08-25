@@ -1,5 +1,13 @@
 //! polyforge-cli — PolyForge command-line interface.
 //!
+//! Global flag (before any subcommand):
+//!   pf --executor <process|sandbox> <command> [args...]
+//!                           select the execution backend used for tool
+//!                           attestations; validated BEFORE any command runs,
+//!                           so an invalid value can never reach a spawn or a
+//!                           ledger write. Default `process` keeps legacy
+//!                           behavior byte-identical.
+//!
 //! Subcommands:
 //!   pf init                 create the ledger at `.pf/ledger.jsonl` if missing (idempotent)
 //!   pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]
@@ -786,12 +794,46 @@ fn cmd_coverage_check(report_path: &str) -> Result<ExitCode, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    let args = match apply_executor_flag(args) {
+        Ok(rest) => rest,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::from(2);
+        }
+    };
     match dispatch(&args) {
         Ok(code) => code,
         Err(msg) => {
             eprintln!("error: {msg}");
             ExitCode::from(2)
         }
+    }
+}
+
+/// Global executor selection: `pf --executor <process|sandbox> <command> ...`.
+/// The flag is only honored as the FIRST argument and is validated + applied
+/// before dispatch, so an invalid value exits 2 before any spawn or ledger
+/// write. Absent flag returns the arguments untouched (legacy behavior).
+fn apply_executor_flag(mut args: Vec<String>) -> Result<Vec<String>, String> {
+    if args.first().map(String::as_str) != Some("--executor") {
+        return Ok(args);
+    }
+    if args.len() < 2 {
+        return Err(EXECUTOR_USAGE.to_string());
+    }
+    let kind = parse_executor_kind(&args[1])?;
+    polyforge_toolrunner::init_executor(kind)?;
+    args.drain(..2);
+    Ok(args)
+}
+
+const EXECUTOR_USAGE: &str = "usage: pf [--executor <process|sandbox>] <command> [args...]";
+
+fn parse_executor_kind(name: &str) -> Result<polyforge_toolrunner::ExecutorKind, String> {
+    match name {
+        "process" => Ok(polyforge_toolrunner::ExecutorKind::Process),
+        "sandbox" => Ok(polyforge_toolrunner::ExecutorKind::Sandbox),
+        other => Err(format!("{EXECUTOR_USAGE}; unknown executor: {other}")),
     }
 }
 
@@ -987,6 +1029,7 @@ fn print_usage() {
         "pf — PolyForge CLI\n\
          \n\
          usage:\n\
+         \x20 pf [--executor <process|sandbox>] <command> [args...]\n\
          \x20 pf init\n\
          \x20 pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]\n\
          \x20              [--experiment <id>] [--model <fp>] [--run <id>] [--budget <amt>] [--metadata <json>]\n\
@@ -1371,5 +1414,96 @@ mod tests {
         ])
         .unwrap_err();
         assert_eq!(err, "unknown flag for ledger export: extra");
+    }
+
+    // ---- T9 --executor flag plumbing ----
+
+    use super::{apply_executor_flag, parse_executor_kind, EXECUTOR_USAGE};
+
+    #[test]
+    fn executor_kind_table() {
+        assert!(matches!(
+            parse_executor_kind("process"),
+            Ok(polyforge_toolrunner::ExecutorKind::Process)
+        ));
+        assert!(matches!(
+            parse_executor_kind("sandbox"),
+            Ok(polyforge_toolrunner::ExecutorKind::Sandbox)
+        ));
+        let err = parse_executor_kind("bogus").unwrap_err();
+        assert_eq!(err, format!("{EXECUTOR_USAGE}; unknown executor: bogus"));
+    }
+
+    #[test]
+    fn apply_executor_flag_absent_leaves_args_untouched() {
+        let args = vec!["gate".to_string(), "demo".to_string()];
+        let rest = apply_executor_flag(args.clone()).expect("passthrough");
+        assert_eq!(rest, args, "no flag means byte-identical legacy dispatch");
+    }
+
+    #[test]
+    fn apply_executor_flag_process_consumes_pair_and_dispatches_rest() {
+        let rest = apply_executor_flag(vec![
+            "--executor".to_string(),
+            "process".to_string(),
+            "ledger".to_string(),
+            "tail".to_string(),
+        ])
+        .expect("process selection");
+        assert_eq!(rest, vec!["ledger".to_string(), "tail".to_string()]);
+    }
+
+    #[test]
+    fn apply_executor_flag_unknown_value_is_usage_error() {
+        let err = apply_executor_flag(vec![
+            "--executor".to_string(),
+            "firecracker".to_string(),
+            "init".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains(EXECUTOR_USAGE) && err.contains("unknown executor: firecracker"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn apply_executor_flag_missing_value_is_usage_error() {
+        let err = apply_executor_flag(vec!["--executor".to_string()]).unwrap_err();
+        assert_eq!(err, EXECUTOR_USAGE);
+    }
+
+    /// Feature-gate failure mode through the CLI surface: `sandbox` without
+    /// the `sandbox-mock` feature must fail with the exact gate message and
+    /// never reach dispatch (so no command, spawn, or ledger write happens).
+    #[test]
+    fn apply_executor_flag_sandbox_requires_feature() {
+        match apply_executor_flag(vec![
+            "--executor".to_string(),
+            "sandbox".to_string(),
+            "init".to_string(),
+        ]) {
+            Err(msg) => {
+                assert_eq!(msg, "sandbox executor requires feature sandbox-mock");
+            }
+            Ok(rest) => {
+                // Feature-on build (T10): validation passed, so dispatch must
+                // receive the remaining arguments untouched.
+                assert_eq!(rest, vec!["init".to_string()]);
+            }
+        }
+    }
+
+    /// The flag is a global FIRST-argument option only; after a subcommand it
+    /// falls through to that subcommand's own unknown-flag rejection.
+    #[test]
+    fn apply_executor_flag_after_subcommand_is_not_global() {
+        let args = vec![
+            "gate".to_string(),
+            "--executor".to_string(),
+            "sandbox".to_string(),
+        ];
+        let rest = apply_executor_flag(args.clone()).expect("passthrough");
+        assert_eq!(rest, args);
     }
 }

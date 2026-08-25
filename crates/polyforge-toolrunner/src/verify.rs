@@ -167,12 +167,17 @@ pub fn verify_and_append(
             stderr: truncate(&stderr, STDERR_LEDGER_LIMIT),
         });
     }
-    let attestation = output.to_attestation(
+    // Record-only executor identity: only a non-process backend contributes
+    // the metadata key, so process runs keep legacy payloads byte-identical.
+    let mut attestation = output.to_attestation(
         claim.task_id.clone(),
         claim.commit_sha.clone(),
         claim.diff_hash.clone(),
         now_ts(),
     );
+    if let Some(digest) = crate::runner::active_executor_digest() {
+        attestation.eval_metadata = Some(serde_json::json!({ "executor_digest": digest }));
+    }
     let mut verified =
         promote(&claim, &attestation).map_err(|e| RunnerError::Promote(format!("{e:?}")))?;
     verified.git_state = Some(current_git_state(&claim));

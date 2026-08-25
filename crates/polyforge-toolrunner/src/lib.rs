@@ -10,7 +10,7 @@ pub mod runner;
 pub mod verify;
 
 pub use runner::{
-    allowlist, env_fingerprint, lookup, parse_timeout, run, run_with_timeout, spawn, RunOutput,
-    RunnerError, Tool, DEFAULT_TOOL_TIMEOUT_SECS, PF_TOOL_TIMEOUT_SECS,
+    allowlist, env_fingerprint, init_executor, lookup, parse_timeout, run, run_with_timeout, spawn,
+    ExecutorKind, RunOutput, RunnerError, Tool, DEFAULT_TOOL_TIMEOUT_SECS, PF_TOOL_TIMEOUT_SECS,
 };
 pub use verify::verify_and_append;

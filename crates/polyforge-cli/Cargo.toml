@@ -12,5 +12,6 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 polyforge-core = { path = "../../crates/polyforge-core", version = "0.3.0" }
+polyforge-toolrunner = { path = "../../crates/polyforge-toolrunner", version = "0.3.0" }
 serde_json = "1"
 sha2 = "0.10"

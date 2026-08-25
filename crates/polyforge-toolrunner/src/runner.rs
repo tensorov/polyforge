@@ -17,7 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -234,8 +234,8 @@ pub fn spawn(tool: &Tool, args: &[String]) -> Result<Child, RunnerError> {
 /// The trait mirrors the free [`run`] function's EXACT signature
 /// (synchronous, no async addition) so call sites can route through a
 /// backend without any behavioral change. Today there is exactly one
-/// implementation, [`ProcessExecutor`]; the indirection exists so a future
-/// backend can be selected behind the same seam.
+/// compiled-in implementation, [`ProcessExecutor`]; the indirection exists so
+/// a sandbox backend can be selected behind the same seam.
 pub(crate) trait Executor {
     /// Run an allowlisted tool to completion under the configured wall-clock
     /// budget. Contract is byte-identical to the free [`run`] function.
@@ -258,10 +258,100 @@ impl Executor for ProcessExecutor {
 /// Singleton instance of the process backend handed out by [`executor`].
 static PROCESS_EXECUTOR: ProcessExecutor = ProcessExecutor;
 
-/// Module-level accessor returning the selected execution backend. Today the
-/// selection is fixed: the process backend is the only one.
+/// Which execution backend attestations run under.
+///
+/// Selected once per process via [`init_executor`] before any spawn; the
+/// default (never initialized) is [`ExecutorKind::Process`], which keeps
+/// legacy behavior byte-identical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutorKind {
+    /// Spawn the allowlisted binary directly in this process (historical
+    /// behavior, always available).
+    Process,
+    /// Run inside a sandbox backend. Requires building with the
+    /// `sandbox-mock` feature; without it [`init_executor`] rejects the
+    /// selection with a clear feature-gate error before anything runs.
+    Sandbox,
+}
+
+/// Internal codes stored in [`EXECUTOR_KIND`]. `0` means "never selected"
+/// and resolves to the process backend.
+const KIND_UNSET: u8 = 0;
+const KIND_PROCESS: u8 = 1;
+const KIND_SANDBOX: u8 = 2;
+
+static EXECUTOR_KIND: AtomicU8 = AtomicU8::new(KIND_UNSET);
+
+/// Select the execution backend for this process. Must be called BEFORE any
+/// tool run; later calls are accepted only when they repeat the already
+/// selected kind (idempotent), otherwise they are rejected.
+///
+/// Fail-closed ordering: the `sandbox-mock` feature gate is checked BEFORE
+/// any state is written, so selecting [`ExecutorKind::Sandbox`] without the
+/// feature leaves the process on the untouched default and returns a clear
+/// error instead of silently falling back.
+pub fn init_executor(kind: ExecutorKind) -> Result<(), String> {
+    let code = match kind {
+        ExecutorKind::Process => KIND_PROCESS,
+        ExecutorKind::Sandbox => {
+            if !cfg!(feature = "sandbox-mock") {
+                return Err("sandbox executor requires feature sandbox-mock".to_string());
+            }
+            KIND_SANDBOX
+        }
+    };
+    match EXECUTOR_KIND.compare_exchange(KIND_UNSET, code, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => Ok(()),
+        Err(prev) if prev == code => Ok(()),
+        Err(prev) => Err(format!(
+            "executor already initialized to {}",
+            kind_name_of_code(prev)
+        )),
+    }
+}
+
+/// Render an internal selection code as its flag-facing name (diagnostics
+/// only; unknown codes render as `process` because that is the effective
+/// fallback).
+fn kind_name_of_code(code: u8) -> &'static str {
+    match code {
+        KIND_SANDBOX => "sandbox",
+        _ => "process",
+    }
+}
+
+/// The currently selected backend kind. An uninitialized process reports
+/// [`ExecutorKind::Process`].
+fn selected_executor_kind() -> ExecutorKind {
+    match EXECUTOR_KIND.load(Ordering::SeqCst) {
+        KIND_SANDBOX => ExecutorKind::Sandbox,
+        _ => ExecutorKind::Process,
+    }
+}
+
+/// Module-level accessor returning the selected execution backend. The
+/// selection is fixed by [`init_executor`]; the default is the process
+/// backend. A recorded Sandbox selection maps to the process backend until
+/// T10 supplies the mock singleton; in practice that state is unreachable
+/// without the feature because init rejects Sandbox before writing it.
 pub(crate) fn executor() -> &'static dyn Executor {
-    &PROCESS_EXECUTOR
+    match selected_executor_kind() {
+        ExecutorKind::Process => &PROCESS_EXECUTOR,
+        ExecutorKind::Sandbox => &PROCESS_EXECUTOR,
+    }
+}
+
+/// Record-only executor identity for attestation payloads: `None` for the
+/// process backend (legacy payloads stay byte-identical, no metadata key),
+/// `Some(digest)` only when a non-process executor performed the run. The
+/// mock sandbox backend arrives in T10; until then every compiled
+/// configuration reports None, so attestations never claim an executor they
+/// did not use.
+pub(crate) fn active_executor_digest() -> Option<String> {
+    match selected_executor_kind() {
+        ExecutorKind::Process => None,
+        ExecutorKind::Sandbox => None,
+    }
 }
 
 /// Run an allowlisted tool to completion and capture its output + attestation
@@ -1501,5 +1591,65 @@ mod tests {
     fn validate_arg_rejects_tab_metachar() {
         let err = validate_arg("cargo-mutants", "--foo\tbar").unwrap_err();
         assert!(matches!(err, RunnerError::InvalidArg { .. }));
+    }
+
+    // ---- T9 executor selection seam ----
+    //
+    // All writers below may only ever record KIND_PROCESS in this build
+    // (Sandbox is rejected before any state write), so these tests are
+    // race-free under cargo's parallel test runner: concurrent Process
+    // selections are idempotent by design.
+
+    #[test]
+    fn selection_defaults_to_process_without_init() {
+        assert_eq!(selected_executor_kind(), ExecutorKind::Process);
+        assert!(active_executor_digest().is_none());
+    }
+
+    #[test]
+    fn init_executor_process_is_idempotent() {
+        init_executor(ExecutorKind::Process).expect("first process selection");
+        init_executor(ExecutorKind::Process).expect("repeat process selection");
+        assert_eq!(selected_executor_kind(), ExecutorKind::Process);
+    }
+
+    /// Feature-gate failure mode: selecting Sandbox without `sandbox-mock`
+    /// must fail with the exact gate message and leave the selection
+    /// untouched (no silent fallback to a half-initialized state).
+    #[test]
+    fn init_executor_sandbox_requires_feature() {
+        match init_executor(ExecutorKind::Sandbox) {
+            Err(msg) => {
+                assert_eq!(msg, "sandbox executor requires feature sandbox-mock");
+                assert_eq!(
+                    selected_executor_kind(),
+                    ExecutorKind::Process,
+                    "rejected selection must not mutate process state"
+                );
+            }
+            Ok(()) => {
+                // Feature-on build (T10): the selection succeeded and must be
+                // observable, never silently dropped.
+                assert_eq!(selected_executor_kind(), ExecutorKind::Sandbox);
+            }
+        }
+    }
+
+    /// Conflicting re-selection renders the recorded kind by name. The full
+    /// conflict path (recorded Sandbox vs requested Process) is only
+    /// reachable with `sandbox-mock` compiled in, because in this build a
+    /// Sandbox request dies at the feature gate before the set-once check.
+    #[test]
+    fn kind_code_names_render_for_conflict_message() {
+        assert_eq!(kind_name_of_code(KIND_PROCESS), "process");
+        assert_eq!(kind_name_of_code(KIND_SANDBOX), "sandbox");
+        assert_eq!(kind_name_of_code(KIND_UNSET), "process");
+    }
+
+    /// Digest contract at the verify choke point: the process backend never
+    /// contributes an executor_digest metadata key.
+    #[test]
+    fn process_backend_yields_no_executor_digest() {
+        assert_eq!(active_executor_digest(), None);
     }
 }

@@ -14,6 +14,11 @@ categories = ["development-tools", "command-line-utilities"]
 name = "polyforge_toolrunner"
 path = "src/lib.rs"
 
+[features]
+# Gate for the sandbox execution backend (T10 mock adapter). Empty until the
+# backend lands; selecting ExecutorKind::Sandbox without it fails closed.
+sandbox-mock = []
+
 [dependencies]
 polyforge-core = { path = "../polyforge-core", version = "0.3.0" }
 serde = { version = "1", features = ["derive"] }

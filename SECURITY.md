@@ -85,7 +85,11 @@ whenever the trust boundaries change.
   or `Validated` entries, and it cannot self-promote.
 - **Tool-allowlist bypass.** An attacker who tries to get arbitrary code
   executed through the toolrunner. The toolrunner runs only allowlisted
-  binaries (cargo/rustc/gcc) with typed arguments and no shell.
+  binaries with typed arguments and no shell: `cargo`/`rustc`/`gcc` plus
+  `pytest`, `ruff check`, `ruff format --check`, `mypy`, `pyright`,
+  `uv --version`, `vitest run`, `tsc --noEmit`, `eslint`, and
+  `biome check`. Package runners (`uv run`, `npx`, `npm exec`) remain
+  excluded entirely because their argv resolves an unbounded binary set.
 
 ### Trust boundaries
 
@@ -104,7 +108,7 @@ whenever the trust boundaries change.
 | Protected | Not protected |
 | --------- | ------------- |
 | Append-only Merkle chain: one-byte tamper breaks the chain and fails closed with `LedgerIntegrity` | Trusted checkout: no external anchoring of the tail hash until Phase 3; a repo-writer can rewrite the ledger and re-commit the anchor |
-| `promote` gatekeeper: the single promotion path in `polyforge-core`; models over MCP can only append `ModelClaim` | No sandbox: the tool allowlist is not a sandbox; an allowlisted binary runs with the privileges of the process that invoked it |
+| `promote` gatekeeper: the single promotion path in `polyforge-core`; models over MCP can only append `ModelClaim` | No live sandbox: the tool allowlist is not a sandbox; an allowlisted binary runs with the privileges of the process that invoked it. A sandbox executor adapter skeleton ships behind the optional `sandbox-mock` feature flag; a live microVM backend is a follow-up |
 | State injection: `ToolAttestation`, `Validation`, `EvalAttestation`, and `Discrepancy` are rejected at the MCP server, so a model cannot inject promoted states | Forward-only state machine: promotion cannot be rolled back, so a mistaken or malicious attestation cannot be undone in place |
 | Fail-closed gate: a corrupted chain or unmet required state exits non-zero and never fabricates a bundle | |
 | Fail-closed TCP token: `PF_MCP_TRANSPORT=tcp` requires `PF_MCP_TOKEN` and defaults to loopback | |

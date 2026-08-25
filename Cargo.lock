@@ -1059,6 +1059,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "polyforge-attest"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "sha2",
@@ -1069,6 +1070,7 @@ name = "polyforge-cli"
 version = "0.3.0"
 dependencies = [
  "polyforge-core",
+ "polyforge-toolrunner",
  "serde_json",
  "sha2",
 ]
