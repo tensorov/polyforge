@@ -149,3 +149,46 @@ jobs:
         with:
           name: mutants.out
           path: mutants.out
+
+  anchoring:
+    needs: [ci]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build CLI
+        run: cargo build -p polyforge-cli
+
+      - name: Compute ledger tail
+        run: |
+          TAIL=$(target/debug/polyforge-cli ledger tail)
+          printf '%s\n' "$TAIL" > /tmp/tail.txt
+          echo "TAIL=$TAIL" >> "$GITHUB_ENV"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign ledger tail keylessly
+        run: cosign sign-blob --yes --bundle "anchor-${{ github.run_id }}.bundle" /tmp/tail.txt
+
+      - name: Attest ledger tail provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: polyforge-ledger-tail@${{ github.sha }}
+          subject-digest: sha256:${{ env.TAIL }}
+
+      - name: Upload anchor artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: anchor-${{ github.run_id }}
+          path: |
+            anchor-${{ github.run_id }}.bundle
+            /tmp/tail.txt
