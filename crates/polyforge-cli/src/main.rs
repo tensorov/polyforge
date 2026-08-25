@@ -451,10 +451,9 @@ fn parse_rfc3339_to_nanos(s: &str) -> Option<String> {
     }
 
     // Zone offset: Z | z | +HH:MM | -HH:MM (nothing else).
-    let offset_minutes: i64;
-    if pos < b.len() && (b[pos] == b'Z' || b[pos] == b'z') {
+    let offset_minutes: i64 = if pos < b.len() && (b[pos] == b'Z' || b[pos] == b'z') {
         pos += 1;
-        offset_minutes = 0;
+        0
     } else if pos + 6 <= b.len() && (b[pos] == b'+' || b[pos] == b'-') && b[pos + 3] == b':' {
         let sign: i64 = if b[pos] == b'+' { 1 } else { -1 };
         let oh = i64::from(num(b, pos + 1, pos + 3)?);
@@ -463,10 +462,10 @@ fn parse_rfc3339_to_nanos(s: &str) -> Option<String> {
             return None;
         }
         pos += 6;
-        offset_minutes = sign * (oh * 60 + om);
+        sign * (oh * 60 + om)
     } else {
         return None;
-    }
+    };
     if pos != b.len() {
         return None;
     }
