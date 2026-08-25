@@ -6,10 +6,8 @@ use std::fs;
 
 use polyforge_attest::{canonical_json, DsseEnvelope, Statement};
 
-const STATEMENT_FIXTURE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/statement.json"
-);
+const STATEMENT_FIXTURE: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/statement.json");
 const ENVELOPE_FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/envelope.json");
 
 fn read_fixture(path: &str) -> String {
@@ -27,25 +25,38 @@ fn statement_fixture_roundtrips_byte_for_byte() {
     let statement: Statement = serde_json::from_str(&raw).expect("fixture decodes into Statement");
     let value = serde_json::to_value(&statement).expect("Statement serializes to Value");
     let canonical = canonical_json(&value);
-    assert_eq!(canonical, raw, "re-serialized statement must equal golden bytes");
+    assert_eq!(
+        canonical, raw,
+        "re-serialized statement must equal golden bytes"
+    );
 }
 
 #[test]
 fn envelope_fixture_roundtrips_byte_for_byte() {
     let raw = read_fixture(ENVELOPE_FIXTURE);
-    let envelope: DsseEnvelope = serde_json::from_str(&raw).expect("fixture decodes into DsseEnvelope");
+    let envelope: DsseEnvelope =
+        serde_json::from_str(&raw).expect("fixture decodes into DsseEnvelope");
     let value = serde_json::to_value(&envelope).expect("DsseEnvelope serializes to Value");
     let canonical = canonical_json(&value);
-    assert_eq!(canonical, raw, "re-serialized envelope must equal golden bytes");
+    assert_eq!(
+        canonical, raw,
+        "re-serialized envelope must equal golden bytes"
+    );
 }
 
 #[test]
 fn mutated_statement_fixture_is_detected() {
     let raw = read_fixture(STATEMENT_FIXTURE);
     let marker = "Statement/v1";
-    let pos = raw.find(marker).expect("marker present in golden statement");
+    let pos = raw
+        .find(marker)
+        .expect("marker present in golden statement");
     let offset = pos + "Statement/".len();
-    assert_eq!(raw.as_bytes()[offset], b'v', "mutation target must actually change");
+    assert_eq!(
+        raw.as_bytes()[offset],
+        b'v',
+        "mutation target must actually change"
+    );
 
     let mut bytes = raw.clone().into_bytes();
     bytes[offset] = b'w';
@@ -65,7 +76,11 @@ fn mutated_envelope_fixture_is_detected() {
     let raw = read_fixture(ENVELOPE_FIXTURE);
     let marker = "pf-test-key-01";
     let pos = raw.find(marker).expect("marker present in golden envelope");
-    assert_eq!(raw.as_bytes()[pos], b'p', "mutation target must actually change");
+    assert_eq!(
+        raw.as_bytes()[pos],
+        b'p',
+        "mutation target must actually change"
+    );
 
     let mut bytes = raw.clone().into_bytes();
     bytes[pos] = b'q';

@@ -139,12 +139,21 @@ mod tests {
             serde_json::json!({ "z": 1 }),
         );
         let v = serde_json::to_value(&s).expect("statement serializes");
-        assert!(v.get("_type").is_some(), "_type key must survive serde rename");
+        assert!(
+            v.get("_type").is_some(),
+            "_type key must survive serde rename"
+        );
         assert!(v.get("predicateType").is_some());
         assert!(v.get("predicate").is_some());
         assert!(v.get("subject").is_some());
 
-        let e = DsseEnvelope::new("aGk=", vec![Signature { keyid: "k".into(), sig: "s".into() }]);
+        let e = DsseEnvelope::new(
+            "aGk=",
+            vec![Signature {
+                keyid: "k".into(),
+                sig: "s".into(),
+            }],
+        );
         let v = serde_json::to_value(&e).expect("envelope serializes");
         assert!(v.get("payloadType").is_some());
         assert!(v.get("payload").is_some());
