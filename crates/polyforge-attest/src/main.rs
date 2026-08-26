@@ -116,7 +116,7 @@ fn cmd_chain(args: &[String]) -> Result<ExitCode, String> {
     let ledger = ledger.ok_or_else(|| CHAIN_USAGE.to_string())?;
 
     let entries = read_ledger(Path::new(ledger)).map_err(|e| e.to_string())?;
-    let payload = statement_json(&emit_chain_statement(&entries))?;
+    let payload = statement_json(&emit_chain_statement(&entries).map_err(|e| e.to_string())?)?;
     match out {
         Some(path) => {
             let envelope =
@@ -178,10 +178,13 @@ mod tests {
         path
     }
 
+    // A real v2-verified two-entry chain (hashes recomputed with core's
+    // length-prefixed canonical encoding); read_ledger fails closed on any
+    // ledger whose entries do not verify.
     const SAMPLE_LEDGER: &str = concat!(
-        r#"{"seq":0,"prev_hash":"","kind":"ModelClaim","payload":{"task_id":"t1","commit_sha":"abc123def456","state":"ModelClaimed"},"hash":"aa11","env_fingerprint":"cli"}"#,
+        r#"{"env_fingerprint":"","hash":"08a97384233e9215044a1e4bb536fc7b6f54ba361dd26e381e5c290b6e9b953e","hash_version":2,"kind":"ModelClaim","payload":{"commit_sha":"abc123def456","state":"ModelClaimed","task_id":"t1"},"prev_hash":"","seq":0,"tool_version":"","ts":"ts-a"}"#,
         "\n",
-        r#"{"seq":1,"prev_hash":"aa11","kind":"ToolAttestation","payload":{"task_id":"t1","commit_sha":"abc123def456","state":"Verified"},"hash":"bb22","env_fingerprint":"cli"}"#,
+        r#"{"env_fingerprint":"","hash":"150f35c563230241cf59ee7d40864a7386c1cb3edd1714463a1d4917ecd9aaf2","hash_version":2,"kind":"ToolAttestation","payload":{"commit_sha":"abc123def456","state":"Verified","task_id":"t1"},"prev_hash":"08a97384233e9215044a1e4bb536fc7b6f54ba361dd26e381e5c290b6e9b953e","seq":1,"tool_version":"","ts":"ts-b"}"#,
         "\n"
     );
 
@@ -296,6 +299,28 @@ mod tests {
         let ledger = path.to_str().expect("utf8 path").to_string();
         let result = dispatch(&args(&["chain", "--ledger", &ledger]));
         assert_eq!(result, Ok(ExitCode::SUCCESS));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn tampered_ledger_fails_closed_with_integrity_error() {
+        // Flip one hex char of the last entry's hash: read_ledger must reject
+        // the whole file before any statement is emitted.
+        let tampered = SAMPLE_LEDGER.replacen(
+            "150f35c563230241cf59ee7d40864a7386c1cb3edd1714463a1d4917ecd9aaf2",
+            "250f35c563230241cf59ee7d40864a7386c1cb3edd1714463a1d4917ecd9aaf2",
+            1,
+        );
+        assert_ne!(tampered, SAMPLE_LEDGER, "mutation must apply");
+        let path = write_temp("tampered", &tampered);
+        let ledger = path.to_str().expect("utf8 path").to_string();
+        for cmd in [
+            vec!["task", "--ledger", &ledger, "--task", "t1"],
+            vec!["chain", "--ledger", &ledger],
+        ] {
+            let err = dispatch(&args(&cmd)).expect_err("tampered ledger must fail");
+            assert!(err.contains("integrity"), "got: {err}");
+        }
         let _ = std::fs::remove_file(&path);
     }
 }

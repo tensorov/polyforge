@@ -9,6 +9,15 @@ The library layer provides:
 - `canonical_json`: recursive canonical JSON (sorted object keys, compact separators)
 - `Statement` / `Subject` / `DsseEnvelope` / `Signature`: in-toto Statement v1 and DSSE wire types
 - `read_ledger`, `emit_task_statement`, `emit_chain_statement`: ledger reader plus deterministic statement emitters
+- `verify_chain`, `compute_entry_hash`: Merkle-chain verification replicating polyforge-core's v2 hash format
+
+Integrity: `read_ledger` verifies Merkle-chain integrity (v2 hash format) and
+rejects tampered ledgers. Every entry's sequence number, previous-hash link,
+and recomputed SHA-256 are checked before any statement is emitted; a broken
+chain fails closed with an integrity error instead of producing output.
+Identifiers are charset-validated: task ids and commit shas must match
+`[A-Za-z0-9._-]{1,128}` and chain tails must be 64 lowercase hex characters,
+so hostile ledger content cannot inject arbitrary bytes into subject names.
 
 ## Binary
 

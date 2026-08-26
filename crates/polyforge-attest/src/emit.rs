@@ -15,21 +15,30 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::canon::canonical_json;
+use crate::verify::verify_chain;
 use crate::{Statement, Subject};
 
 /// Predicate type URI carried by every statement emitted by this module.
 pub const POLYFORGE_EVIDENCE_PREDICATE_V1: &str = "https://polyforge.dev/attestations/evidence/v1";
 
 /// Errors raised while reading a ledger or emitting statements from it.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum LedgerError {
     /// A non-empty line failed to parse as a ledger entry; `line` is the
     /// 1-based line number in the file.
     MalformedLine { line: usize },
-    /// A semantic integrity problem (for example no entries for a task).
+    /// A semantic integrity problem (broken Merkle chain, no entries for a
+    /// task, malformed tail hash).
     Integrity { msg: String },
     /// An empty task id was supplied to [`emit_task_statement`].
     EmptyTaskId,
+    /// An identifier violated the safe charset policy
+    /// (`^[A-Za-z0-9._-]{1,128}$` for task ids and commit shas; exactly 64
+    /// lowercase hex chars for chain tails). The raw value is kept on the
+    /// variant for programmatic access but is never echoed verbatim by
+    /// [`Display`](fmt::Display), so a rejected injection payload cannot leak
+    /// control characters into logs or stderr.
+    InvalidIdentifier { field: String, value: String },
     /// Filesystem failure with the underlying OS message.
     Io(String),
 }
@@ -42,6 +51,16 @@ impl fmt::Display for LedgerError {
             }
             Self::Integrity { msg } => write!(f, "ledger integrity error: {msg}"),
             Self::EmptyTaskId => write!(f, "task id must not be empty"),
+            Self::InvalidIdentifier { field, value } => {
+                // Control characters are stripped and the echo truncated so a
+                // rejected injection attempt cannot smuggle newlines into
+                // error output.
+                let shown: String = value.chars().filter(|c| !c.is_control()).take(32).collect();
+                write!(
+                    f,
+                    "invalid identifier for field '{field}': rejected value '{shown}'"
+                )
+            }
             Self::Io(msg) => write!(f, "io error: {msg}"),
         }
     }
@@ -51,8 +70,10 @@ impl std::error::Error for LedgerError {}
 
 /// One append-only ledger entry as stored on disk.
 ///
-/// Mirrors the top-level fields of a `.pf/ledger.jsonl` line that the
-/// emitters need; unknown extra fields on the wire are ignored.
+/// Mirrors the hash-relevant fields of a `.pf/ledger.jsonl` line (the same
+/// shape as `polyforge_core::ledger::EvidenceEntry`) so [`crate::verify`]
+/// can recompute the v2 identity hash byte for byte; unknown extra fields on
+/// the wire are ignored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     /// Monotonic sequence number of the entry.
@@ -71,12 +92,25 @@ pub struct Entry {
     /// Environment fingerprint recorded at append time (may be empty).
     #[serde(default)]
     pub env_fingerprint: String,
+    /// Tool version recorded at append time; feeds the v2 hash input.
+    #[serde(default)]
+    pub tool_version: String,
+    /// Timestamp datum recorded at append time; feeds the v2 hash input.
+    #[serde(default)]
+    pub ts: String,
+    /// Canonical hash encoding version (`0` is the serde default marking a
+    /// legacy v1 entry; fresh entries carry `2`). Only version 2 verifies.
+    #[serde(default)]
+    pub hash_version: u8,
 }
 
 /// Reads a JSONL ledger file into entries.
 ///
 /// Blank lines are skipped. Any other line that fails to parse yields
-/// [`LedgerError::MalformedLine`] with its 1-based line number; the reader
+/// [`LedgerError::MalformedLine`] with its 1-based line number. After parsing,
+/// the whole Merkle chain is verified ([`crate::verify::verify_chain`]): a
+/// tampered, reordered, or truncated ledger fails closed with
+/// [`LedgerError::Integrity`] instead of ever reaching an emitter. The reader
 /// never panics on malformed content.
 pub fn read_ledger(path: &Path) -> Result<Vec<Entry>, LedgerError> {
     let content = std::fs::read_to_string(path).map_err(|e| LedgerError::Io(e.to_string()))?;
@@ -91,6 +125,7 @@ pub fn read_ledger(path: &Path) -> Result<Vec<Entry>, LedgerError> {
             .map_err(|_| LedgerError::MalformedLine { line: line_no })?;
         entries.push(entry);
     }
+    verify_chain(&entries)?;
     Ok(entries)
 }
 
@@ -110,6 +145,20 @@ pub fn sha256_hex(data: &[u8]) -> String {
 
 fn payload_str<'a>(entry: &'a Entry, key: &str) -> Option<&'a str> {
     entry.payload.get(key).and_then(Value::as_str)
+}
+
+/// True when `s` matches `^[A-Za-z0-9._-]{1,128}$`. Byte-level check is
+/// sufficient because the allowed set is ASCII-only; any multibyte input
+/// fails the byte membership test.
+fn is_safe_identifier(s: &str) -> bool {
+    (1..=128).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
+/// True when `s` is exactly 64 lowercase hex characters (a SHA-256 digest).
+fn is_lower_hex_64(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn short12(hex: &str) -> String {
@@ -134,6 +183,12 @@ fn last_non_empty<'a>(
 /// subject digest is the SHA-256 of the gate bundle file when `bundle_path`
 /// is given, otherwise the SHA-256 of the concatenated canonical JSON of the
 /// task's entries. Identical inputs always produce identical statements.
+///
+/// Charset policy: `task_id` and the resolved `commit_sha` must match
+/// `^[A-Za-z0-9._-]{1,128}$`; anything else (unicode, path separators,
+/// newlines, shell metacharacters) is rejected with
+/// [`LedgerError::InvalidIdentifier`] so a hostile ledger cannot inject
+/// arbitrary bytes into subject names.
 pub fn emit_task_statement(
     entries: &[Entry],
     task_id: &str,
@@ -141,6 +196,12 @@ pub fn emit_task_statement(
 ) -> Result<Statement, LedgerError> {
     if task_id.is_empty() {
         return Err(LedgerError::EmptyTaskId);
+    }
+    if !is_safe_identifier(task_id) {
+        return Err(LedgerError::InvalidIdentifier {
+            field: "task_id".to_owned(),
+            value: task_id.to_owned(),
+        });
     }
     let task_entries: Vec<&Entry> = entries
         .iter()
@@ -154,6 +215,12 @@ pub fn emit_task_statement(
 
     let commit_sha =
         last_non_empty(&task_entries, |e| payload_str(e, "commit_sha")).unwrap_or_default();
+    if !is_safe_identifier(&commit_sha) {
+        return Err(LedgerError::InvalidIdentifier {
+            field: "commit_sha".to_owned(),
+            value: commit_sha,
+        });
+    }
     let name = format!("polyforge/task/{task_id}@{}", short12(&commit_sha));
 
     let digest_hex = match bundle_path {
@@ -241,12 +308,23 @@ pub fn emit_task_statement(
 /// byte string so the output stays valid and deterministic. The predicate
 /// carries the entry count, the tail hash, and the anchor sidecar hash when
 /// an `Anchor`-kind entry carries one in its payload (`head_hash`).
-pub fn emit_chain_statement(entries: &[Entry]) -> Statement {
+///
+/// Charset policy: the tail and any present anchor sidecar hash must be
+/// exactly 64 lowercase hex characters; anything else is rejected with
+/// [`LedgerError::InvalidIdentifier`] instead of being copied into the
+/// statement.
+pub fn emit_chain_statement(entries: &[Entry]) -> Result<Statement, LedgerError> {
     let tail = entries
         .last()
         .map(|e| e.hash.clone())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| sha256_hex(b""));
+    if !is_lower_hex_64(&tail) {
+        return Err(LedgerError::InvalidIdentifier {
+            field: "tail".to_owned(),
+            value: tail,
+        });
+    }
     let anchor_sidecar_hash = entries
         .iter()
         .rev()
@@ -254,9 +332,17 @@ pub fn emit_chain_statement(entries: &[Entry]) -> Statement {
         .and_then(|e| e.payload.get("head_hash"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    if let Some(sidecar) = &anchor_sidecar_hash {
+        if !is_lower_hex_64(sidecar) {
+            return Err(LedgerError::InvalidIdentifier {
+                field: "anchor_sidecar_hash".to_owned(),
+                value: sidecar.clone(),
+            });
+        }
+    }
 
     let subject = Subject::new(format!("polyforge/chain@{}", short12(&tail)), tail.clone());
-    Statement::new(
+    Ok(Statement::new(
         vec![subject],
         POLYFORGE_EVIDENCE_PREDICATE_V1,
         json!({
@@ -264,7 +350,7 @@ pub fn emit_chain_statement(entries: &[Entry]) -> Statement {
             "tail": tail,
             "anchor_sidecar_hash": anchor_sidecar_hash,
         }),
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -279,8 +365,16 @@ mod tests {
             payload,
             hash: hash.to_owned(),
             env_fingerprint: String::new(),
+            tool_version: String::new(),
+            ts: String::new(),
+            hash_version: 2,
         }
     }
+
+    const H_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const H_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const H_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const H_D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 
     #[test]
     fn sha256_hex_matches_known_vectors() {
@@ -296,7 +390,7 @@ mod tests {
 
     #[test]
     fn empty_ledger_chain_statement_hashes_empty_input() {
-        let s = emit_chain_statement(&[]);
+        let s = emit_chain_statement(&[]).expect("empty ledger emits");
         assert_eq!(
             s.subject[0].digest.get("sha256").map(String::as_str),
             Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
@@ -306,12 +400,12 @@ mod tests {
     #[test]
     fn chain_statement_takes_tail_from_last_entry() {
         let entries = vec![
-            entry(0, "", "ModelClaim", json!({"task_id": "t"}), "aa11"),
-            entry(1, "aa11", "Validation", json!({"task_id": "t"}), "bb22"),
+            entry(0, "", "ModelClaim", json!({"task_id": "t"}), H_A),
+            entry(1, H_A, "Validation", json!({"task_id": "t"}), H_B),
         ];
-        let s = emit_chain_statement(&entries);
+        let s = emit_chain_statement(&entries).expect("emits");
         let v = serde_json::to_value(&s).expect("serializes");
-        assert_eq!(v["predicate"]["tail"], "bb22");
+        assert_eq!(v["predicate"]["tail"], H_B);
         assert_eq!(v["predicate"]["seq_count"], 2);
         assert!(v["predicate"]["anchor_sidecar_hash"].is_null());
     }
@@ -322,12 +416,12 @@ mod tests {
             0,
             "",
             "Anchor",
-            json!({"head_hash": "cc33", "entry_count": 1}),
-            "dd44",
+            json!({"head_hash": H_C, "entry_count": 1}),
+            H_D,
         )];
-        let s = emit_chain_statement(&entries);
+        let s = emit_chain_statement(&entries).expect("emits");
         let v = serde_json::to_value(&s).expect("serializes");
-        assert_eq!(v["predicate"]["anchor_sidecar_hash"], "cc33");
+        assert_eq!(v["predicate"]["anchor_sidecar_hash"], H_C);
     }
 
     #[test]
@@ -335,5 +429,109 @@ mod tests {
         let entries = vec![entry(0, "", "ModelClaim", json!({"task_id": "a"}), "h")];
         let err = emit_task_statement(&entries, "missing", None).expect_err("must fail");
         assert!(matches!(err, LedgerError::Integrity { .. }));
+    }
+
+    #[test]
+    fn uppercase_tail_is_rejected() {
+        let upper = H_A.to_uppercase();
+        let entries = vec![entry(0, "", "Anchor", json!({}), &upper)];
+        let err = emit_chain_statement(&entries).expect_err("uppercase tail must fail");
+        match err {
+            LedgerError::InvalidIdentifier { field, value } => {
+                assert_eq!(field, "tail");
+                assert_eq!(value, upper);
+            }
+            other => panic!("expected InvalidIdentifier, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn short_tail_is_rejected() {
+        let entries = vec![entry(0, "", "ModelClaim", json!({"task_id": "t"}), "aa11")];
+        let err = emit_chain_statement(&entries).expect_err("short tail must fail");
+        assert!(matches!(err, LedgerError::InvalidIdentifier { field, .. } if field == "tail"));
+    }
+
+    #[test]
+    fn invalid_anchor_sidecar_hash_is_rejected() {
+        let entries = vec![entry(
+            0,
+            "",
+            "Anchor",
+            json!({"head_hash": "ZZ-not-hex"}),
+            H_D,
+        )];
+        let err = emit_chain_statement(&entries).expect_err("bad sidecar must fail");
+        assert!(
+            matches!(err, LedgerError::InvalidIdentifier { ref field, .. } if field == "anchor_sidecar_hash"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn newline_task_id_is_rejected() {
+        let entries = vec![entry(
+            0,
+            "",
+            "ModelClaim",
+            json!({"task_id": "evil\nINJECTED", "commit_sha": "abc"}),
+            "h",
+        )];
+        let err = emit_task_statement(&entries, "evil\nINJECTED", None).expect_err("must fail");
+        match err {
+            LedgerError::InvalidIdentifier { field, value } => {
+                assert_eq!(field, "task_id");
+                assert_eq!(value, "evil\nINJECTED");
+                // Display must not echo control characters verbatim.
+                let shown = LedgerError::InvalidIdentifier {
+                    field: field.clone(),
+                    value: value.clone(),
+                }
+                .to_string();
+                assert!(!shown.contains('\n'));
+            }
+            other => panic!("expected InvalidIdentifier, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_traversal_commit_sha_is_rejected() {
+        let entries = vec![entry(
+            0,
+            "",
+            "ModelClaim",
+            json!({"task_id": "t", "commit_sha": "../../etc"}),
+            "h",
+        )];
+        let err = emit_task_statement(&entries, "t", None).expect_err("must fail");
+        assert!(
+            matches!(err, LedgerError::InvalidIdentifier { ref field, .. } if field == "commit_sha"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn overlong_task_id_is_rejected() {
+        let long = "a".repeat(129);
+        let err = emit_task_statement(&[], &long, None).expect_err("must fail");
+        assert!(matches!(err, LedgerError::InvalidIdentifier { field, .. } if field == "task_id"));
+    }
+
+    #[test]
+    fn safe_identifiers_pass_charset_gate() {
+        assert!(is_safe_identifier("bootstrap"));
+        assert!(is_safe_identifier("release-v0.3.0_x"));
+        assert!(is_safe_identifier(&"a".repeat(128)));
+        assert!(!is_safe_identifier(""));
+        assert!(!is_safe_identifier("a b"));
+        assert!(!is_safe_identifier("задача"));
+        assert!(!is_safe_identifier("../x"));
+        assert!(!is_safe_identifier(&"a".repeat(129)));
+        assert!(is_lower_hex_64(H_A));
+        assert!(!is_lower_hex_64(&H_A[..63]));
+        assert!(!is_lower_hex_64(&H_A.to_uppercase()));
+        assert!(!is_lower_hex_64(
+            "g000000000000000000000000000000000000000000000000000000000000000"
+        ));
     }
 }

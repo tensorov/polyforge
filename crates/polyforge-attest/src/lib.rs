@@ -10,12 +10,14 @@ use serde::{Deserialize, Serialize};
 
 pub mod canon;
 pub mod emit;
+pub mod verify;
 
 pub use canon::canonical_json;
 pub use emit::{
     emit_chain_statement, emit_task_statement, read_ledger, sha256_hex, Entry, LedgerError,
     POLYFORGE_EVIDENCE_PREDICATE_V1,
 };
+pub use verify::{compute_entry_hash, verify_chain};
 
 /// `_type` value of an in-toto attestation statement, version 1.
 pub const IN_TOTO_STATEMENT_V1: &str = "https://in-toto.io/Statement/v1";
