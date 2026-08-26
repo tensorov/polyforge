@@ -215,7 +215,7 @@ fn scan_latest(ledger: &mut Ledger, task_id: &str) -> Result<TaskLatest, String>
 
 /// The task's latest entry as a tri-state entry, iff that entry is `Verified`.
 ///
-/// Fail-closed wrapper over [`scan_latest`]: integrity or parse failures are
+/// Fail-closed wrapper over `scan_latest`: integrity or parse failures are
 /// errors; anything else yields `None` and the caller classifies by state.
 pub fn latest_verified(
     ledger: &mut Ledger,

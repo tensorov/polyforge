@@ -406,7 +406,7 @@ pub(crate) fn active_executor_digest() -> Option<String> {
 /// `name` are ignored, including in the attested `command` string and the
 /// resolved `tool_version`.
 ///
-/// Delegates to the module's selected [`Executor`] backend ([`ProcessExecutor`]).
+/// Delegates to the module's selected `Executor` backend (`ProcessExecutor`).
 pub fn run(tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
     executor().run(tool, args)
 }

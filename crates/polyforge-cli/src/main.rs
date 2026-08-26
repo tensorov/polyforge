@@ -1,7 +1,7 @@
 //! polyforge-cli — PolyForge command-line interface.
 //!
 //! Global flag (before any subcommand):
-//!   pf --executor <process|sandbox> <command> [args...]
+//!   pf --executor <process|sandbox> \<command\> [args...]
 //!                           select the execution backend used for tool
 //!                           attestations; validated BEFORE any command runs,
 //!                           so an invalid value can never reach a spawn or a
@@ -10,13 +10,13 @@
 //!
 //! Subcommands:
 //!   pf init                 create the ledger at `.pf/ledger.jsonl` if missing (idempotent)
-//!   pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]
-//!                           [--experiment <id>] [--model <fp>] [--run <id>]
-//!                           [--budget <amt>] [--metadata <json>]
+//!   pf append \<kind\> \<payload\> [--task \<id\>] [--commit \<sha\>] [--diff \<hash\>]
+//!                           [--experiment \<id\>] [--model \<fp\>] [--run \<id\>]
+//!                           [--budget \<amt\>] [--metadata \<json\>]
 //!                           append an evidence entry to the ledger
 //!   pf ledger tail          print the last entry's hash (ChainState.head_hash)
 //!   pf ledger summary       print per-task counts (latest ledger state per task)
-//!   pf ledger export --otel [--out <path>]
+//!   pf ledger export --otel [--out \<path\>]
 //!                           export the whole ledger as OTLP/JSON log records
 //!                           (default stdout; --out writes the same bytes to a
 //!                           file). Fail-closed: a corrupt chain is an error.
@@ -24,7 +24,7 @@
 //!                           all-digits ts is epoch millis, RFC3339 strict
 //!                           subset is parsed by hand; anything else keeps its
 //!                           raw string in attributes and omits time fields.
-//!   pf gate <task_id> [--required verified,validated] [--commit <sha>] [--diff <hash>]
+//!   pf gate <task_id> [--required verified,validated] [--commit \<sha\>] [--diff \<hash\>]
 //!                           run evaluate_complete; on PASS write a reproducible bundle
 //!   pf coverage-check --report <llvm-cov.json>
 //!                           evaluate a cargo llvm-cov --json report against the
