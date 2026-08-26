@@ -248,3 +248,21 @@ jobs:
           path: |
             anchor-publication.json
             /tmp/anchor-pub.bundle
+
+  dependency-policy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Populate local registry cache
+        run: cargo fetch
+
+      - name: Dependency policy gate
+        run: cargo deny --offline check bans licenses sources

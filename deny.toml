@@ -1,0 +1,53 @@
+# Dependency policy gate for PolyForge.
+# Enforced by CI (.github/workflows/ci.yml, job "dependency-policy"):
+#   cargo deny --offline check bans licenses sources
+#
+# NOTE ON FORMAT: cargo-deny 0.20 parses every allow entry as a single SPDX
+# licensee (id plus optional WITH exception); compound OR expressions are not
+# accepted in this list anymore. A crate whose license field is a compound
+# expression passes when at least one of its branches matches an allowed
+# licensee, so the audited v0.4.0 spread maps onto single ids as follows:
+#   "MIT OR Apache-2.0" x95 and "Apache-2.0 OR MIT" x4 -> MIT + Apache-2.0
+#   "Unlicense OR MIT" (memchr)                        -> Unlicense (+ MIT)
+#   "Apache-2.0 OR BSL-1.0" (ryu)                      -> BSL-1.0 (+ Apache-2.0)
+#   "Apache-2.0 OR MIT OR LGPL-2.1-or-later" (r-efi)   -> covered by the
+#     already-allowed Apache-2.0 and MIT branches; the consumer picks the
+#     permissive option, so the LGPL arm never applies to our build. Kept
+#     as-is per plan decision, reviewed 2026-08.
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # unicode-ident ships Unicode-3.0 for the character tables it embeds.
+    "Unicode-3.0",
+    # foldhash (transitive via the ratatui stack) is Zlib licensed.
+    "Zlib",
+    # memchr offers Unlicense OR MIT.
+    "Unlicense",
+    # ryu offers Apache-2.0 OR BSL-1.0.
+    "BSL-1.0",
+]
+
+[bans]
+multiple-versions = "warn"
+skip = [
+    # base64 duplicated: polyforge-attest pins 0.22 directly while rmcp pulls
+    # the 0.23 line; semver-incompatible minors cannot unify until upstreams
+    # converge on one line.
+    { name = "base64", version = "0.22.1" },
+    # hashbrown duplicated: kasuari (ratatui-core parser) resolves 0.16 while
+    # lru and the ratatui widget stack moved to 0.17.
+    { name = "hashbrown", version = "0.16.1" },
+    # syn duplicated: 3.0.3 arrives via darling_core (the ratatui instability
+    # proc-macro chain) while the 2.x line stays canonical for the rest of the
+    # graph; a legacy 1.0.109 lockfile entry exists but is not reachable.
+    { name = "syn", version = "3.0.3" },
+    # winapi duplicated: fs2 (polyforge-core file locking) still references
+    # the legacy winapi 0.2 line on Windows targets; everything else uses 0.3.
+    { name = "winapi", version = "0.2.8" },
+]
+
+[sources]
+unknown-registry = "warn"

@@ -403,7 +403,11 @@ pub fn promote(
 ) -> Result<EvidenceEntry, EvidenceError> {
     match (entry.state, attestation.kind) {
         (EvidenceState::ModelClaimed, EvidenceKind::ToolAttestation) => {
-            Ok(EvidenceEntry::tool_attestation(
+            // Record-only executor identity rides on the attestation's
+            // eval_metadata (set by the toolrunner when a non-process
+            // backend ran); it must survive promotion into the Verified
+            // entry or the backend identity is silently lost.
+            let mut promoted = EvidenceEntry::tool_attestation(
                 entry.task_id.clone(),
                 entry.commit_sha.clone(),
                 entry.diff_hash.clone(),
@@ -413,7 +417,9 @@ pub fn promote(
                 attestation.exit_code,
                 attestation.stdout_hash.clone(),
                 attestation.ts.clone(),
-            ))
+            );
+            promoted.eval_metadata = attestation.eval_metadata.clone();
+            Ok(promoted)
         }
         (EvidenceState::ModelClaimed, EvidenceKind::EvalAttestation) => {
             Ok(EvidenceEntry::eval_attestation(

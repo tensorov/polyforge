@@ -1,0 +1,12 @@
+# cargo-mutants config for langfuse-bridge (crate-local; cargo-mutants 27.x
+# reads ONLY .cargo/mutants.toml).
+#
+# Quarantine: `replace | with ^ in base64_encode` (src/lib.rs:159:33 and
+# src/lib.rs:159:45). The three assembled operands occupy pairwise
+# bit-disjoint ranges of the u32 triple ((b0<<16): bits 16-23, (b1<<8):
+# bits 8-15, b2: bits 0-7), so OR, XOR, and addition are provably identical
+# at both sites. No black-box test can distinguish them; excluded as genuine
+# equivalences rather than coverage gaps.
+exclude_re = [
+    'src/lib\.rs:159:\d+: replace \| with \^ in base64_encode',
+]

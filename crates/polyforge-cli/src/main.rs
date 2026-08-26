@@ -1506,4 +1506,59 @@ mod tests {
         let rest = apply_executor_flag(args.clone()).expect("passthrough");
         assert_eq!(rest, args);
     }
+
+    /// T3 boundary kill (V-E item 17): exactly two arguments — the flag plus
+    /// its value, nothing after — must parse and dispatch an EMPTY remainder.
+    /// The `<` -> `<=` off-by-one in the length guard turns this success into
+    /// a usage error. An `already initialized` rejection proves the guard and
+    /// kind parse succeeded (validation precedes init), so it is accepted as
+    /// set-once contention from a sibling test, never as a boundary failure.
+    #[test]
+    fn apply_executor_flag_boundary_exactly_two_args_parses_to_empty_rest() {
+        match apply_executor_flag(vec!["--executor".to_string(), "process".to_string()]) {
+            Ok(rest) => assert!(
+                rest.is_empty(),
+                "flag plus value with no trailing command consumes both args, got {rest:?}"
+            ),
+            Err(msg) if msg.contains("already initialized") => {}
+            Err(msg) => panic!("exactly-two-args form must parse, got: {msg}"),
+        }
+    }
+
+    /// T3 arg-position table: only the FIRST argument position selects the
+    /// executor; the same flag pair in middle or last position is ordinary
+    /// dispatch payload and passes through byte-identical; an absent flag is
+    /// legacy passthrough. All four rows must agree on what reaches dispatch.
+    #[test]
+    fn apply_executor_flag_position_table_first_only_is_honored() {
+        let tail = || vec!["ledger".to_string(), "tail".to_string()];
+
+        let mut first = vec!["--executor".to_string(), "process".to_string()];
+        first.extend(tail());
+        let rest = match apply_executor_flag(first) {
+            Ok(rest) => rest,
+            Err(msg) if msg.contains("already initialized") => tail(),
+            Err(msg) => panic!("first-position flag must parse, got: {msg}"),
+        };
+        assert_eq!(rest, tail(), "honored flag leaves exactly the command");
+
+        let mut middle = tail();
+        middle.insert(1, "--executor".to_string());
+        middle.insert(2, "process".to_string());
+        let passthrough_mid = middle.clone();
+        let rest = apply_executor_flag(middle).expect("middle position is not global");
+        assert_eq!(rest, passthrough_mid);
+
+        let mut last = tail();
+        last.push("--executor".to_string());
+        last.push("process".to_string());
+        let passthrough_last = last.clone();
+        let rest = apply_executor_flag(last).expect("last position is not global");
+        assert_eq!(rest, passthrough_last);
+
+        let absent = tail();
+        let passthrough_absent = absent.clone();
+        let rest = apply_executor_flag(absent).expect("absent flag is legacy passthrough");
+        assert_eq!(rest, passthrough_absent);
+    }
 }

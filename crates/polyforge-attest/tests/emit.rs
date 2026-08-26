@@ -281,3 +281,115 @@ fn t4_deleted_middle_entry_leaves_seq_gap() {
     assert!(matches!(err, LedgerError::Integrity { .. }), "{err:?}");
     assert!(err.to_string().contains("seq out of order"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// T3 mutation kills: identity-field null filters in emit_task_statement
+// (emit.rs identity_str / eval_metadata). The `delete !` mutants negate the
+// `.filter(|v| !v.is_null())` guards, so the distinguishing fixtures carry
+// NON-null values: under a negated filter a present string value is dropped
+// and the predicate field degrades to null.
+// ---------------------------------------------------------------------------
+
+/// Task-spec fixture: an entry whose payload carries an EXPLICIT null
+/// identity key. The emitted statement must never surface a string value for
+/// it. (The predicate always contains the key; canonical JSON preserves
+/// explicit nulls, so "omitted" means: no value, serialized as null.)
+#[test]
+fn explicit_null_identity_key_carries_no_value_into_predicate() {
+    let entries = vec![synthetic_entry(
+        0,
+        "",
+        "ModelClaim",
+        json!({"task_id": "t1", "commit_sha": "abc123def456", "state": "ModelClaimed", "run_id": null}),
+        "h0",
+    )];
+    let statement = emit_task_statement(&entries, "t1", None).expect("emits");
+    let text = canonical_json(&serde_json::to_value(&statement).expect("serializes"));
+    let v: Value = serde_json::from_str(&text).expect("canonical text reparses");
+    assert!(
+        v["predicate"]["run_id"].is_null(),
+        "explicit null run_id must not surface a value: {text}"
+    );
+    assert!(
+        !text.contains(r#""run_id":""#),
+        "no string value may leak for a null run_id: {text}"
+    );
+}
+
+/// A later explicit null shadows an earlier non-null value ("later appends
+/// win" applies to nulls too): find_map stops at the newest entry carrying
+/// the key, and the null filter drops it.
+#[test]
+fn later_null_identity_key_shadows_earlier_value() {
+    let entries = vec![
+        synthetic_entry(
+            0,
+            "",
+            "ModelClaim",
+            json!({"task_id": "t1", "commit_sha": "abc123def456", "state": "ModelClaimed", "run_id": "old-run"}),
+            "h0",
+        ),
+        synthetic_entry(
+            1,
+            "h0",
+            "ToolAttestation",
+            json!({"task_id": "t1", "commit_sha": "abc123def456", "state": "Verified", "run_id": null}),
+            "h1",
+        ),
+    ];
+    let v = serde_json::to_value(emit_task_statement(&entries, "t1", None).expect("emits"))
+        .expect("serializes");
+    assert!(
+        v["predicate"]["run_id"].is_null(),
+        "a later explicit null must shadow the earlier value: {v}"
+    );
+}
+
+/// THE kill for emit.rs:255 (`delete !` in the identity_str filter): every
+/// non-null identity field must flow verbatim into the predicate.
+#[test]
+fn non_null_identity_fields_flow_into_predicate() {
+    let entries = vec![synthetic_entry(
+        0,
+        "",
+        "ModelClaim",
+        json!({
+            "task_id": "t1",
+            "commit_sha": "abc123def456",
+            "state": "ModelClaimed",
+            "experiment_id": "exp-7",
+            "model_fingerprint": "fp-x9",
+            "run_id": "run-42",
+            "budget": "5usd"
+        }),
+        "h0",
+    )];
+    let v = serde_json::to_value(emit_task_statement(&entries, "t1", None).expect("emits"))
+        .expect("serializes");
+    assert_eq!(v["predicate"]["experiment_id"], "exp-7");
+    assert_eq!(v["predicate"]["model_fingerprint"], "fp-x9");
+    assert_eq!(v["predicate"]["run_id"], "run-42");
+    assert_eq!(v["predicate"]["budget"], "5usd");
+}
+
+/// THE kill for emit.rs:263 (`delete !` in the eval_metadata filter): a
+/// non-null metadata object must flow verbatim into the predicate.
+#[test]
+fn eval_metadata_object_flows_into_predicate() {
+    let entries = vec![synthetic_entry(
+        0,
+        "",
+        "EvalAttestation",
+        json!({
+            "task_id": "t1",
+            "commit_sha": "abc123def456",
+            "state": "Verified",
+            "eval_metadata": {"gpu": "a100", "steps": 8}
+        }),
+        "h0",
+    )];
+    let v = serde_json::to_value(emit_task_statement(&entries, "t1", None).expect("emits"))
+        .expect("serializes");
+    assert_eq!(v["predicate"]["eval_metadata"]["gpu"], "a100");
+    assert_eq!(v["predicate"]["eval_metadata"]["steps"], 8);
+}

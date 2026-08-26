@@ -1702,6 +1702,14 @@ mod tests {
         assert_eq!(active_executor_digest(), None);
     }
 
+    /// T2: kills both ProcessExecutor::label mutants ("process" x2) in
+    /// feature-off builds too, where sandbox_dispatch_tests is compiled out.
+    #[cfg(not(feature = "sandbox-mock"))]
+    #[test]
+    fn process_backend_label_pinned_without_feature() {
+        assert_eq!(executor_for_kind(ExecutorKind::Process).label(), "process");
+    }
+
     // ---- T10 mock sandbox dispatch ----
     //
     // Feature-on only. Drives the PURE per-kind dispatchers so the set-once
@@ -1779,6 +1787,46 @@ mod tests {
                 Some(executor_digest().as_str())
             );
             assert_eq!(executor_digest_for_kind(ExecutorKind::Process), None);
+        }
+
+        // ---- T2 kill-tests (polyforge-v040-hardening) ----
+        //
+        // Byte-exact pins for the 12-mutant survivor cluster. Unlike the
+        // derivation tests above, these compare against INDEPENDENTLY
+        // computed constants, so any value mutation of the digest formula,
+        // the image id, or either backend label fails here.
+
+        /// sha256("mock-sandbox-image-v1")[..16], computed outside the crate.
+        const T2_EXPECTED_DIGEST: &str = "7ae02d70fb50d824";
+
+        /// Kills sandbox_mock.rs executor_digest value mutants and the
+        /// runner.rs digest_for_kind -> None mutant: the digest must be the
+        /// exact literal prefix, surfaced per-kind (Some for Sandbox, None
+        /// for Process).
+        #[test]
+        fn executor_digest_is_byte_exact_pinned_literal() {
+            assert_eq!(executor_digest(), T2_EXPECTED_DIGEST);
+            assert_eq!(
+                executor_digest_for_kind(ExecutorKind::Sandbox),
+                Some(T2_EXPECTED_DIGEST.to_string())
+            );
+            assert_eq!(executor_digest_for_kind(ExecutorKind::Process), None);
+        }
+
+        /// Kills both label mutants on each backend ("process" x2 at
+        /// runner.rs ProcessExecutor::label, "sandbox-mock" x2 at
+        /// MockSandboxExecutor::label): each label must equal its exact
+        /// string and differ from the empty string and the other label.
+        #[test]
+        fn backend_labels_are_byte_exact_and_mutually_distinct() {
+            let process = executor_for_kind(ExecutorKind::Process).label();
+            assert_eq!(process, "process");
+            assert_ne!(process, "");
+            assert_ne!(process, "sandbox-mock");
+            let sandbox = executor_for_kind(ExecutorKind::Sandbox).label();
+            assert_eq!(sandbox, "sandbox-mock");
+            assert_ne!(sandbox, "");
+            assert_ne!(sandbox, "process");
         }
     }
 }
