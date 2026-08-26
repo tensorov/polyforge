@@ -6,6 +6,7 @@
 //! group when a run exceeds its budget. Evidence becomes `Verified` only
 //! through an allowlisted tool run (see [`runner`] and [`verify`]).
 
+pub mod prober;
 pub mod runner;
 #[cfg(feature = "sandbox-mock")]
 pub mod sandbox_mock;
