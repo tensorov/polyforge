@@ -26,6 +26,11 @@ sandbox-gvisor = []
 # default: no new dependencies, std::process::Command only. When compiled in,
 # a probed Container tier routes ExecutorKind::Sandbox to ContainerExecutor.
 sandbox-container = []
+# Gate for the Firecracker microVM execution backend (T9). Empty: std-only
+# plus serde_json/sha2 which are already unconditional deps. Live boots need
+# /dev/kvm plus the firecracker/jailer binaries and provisioned assets; unit
+# tests are hermetic (mocked-API only, no VM).
+sandbox-firecracker = []
 
 [dependencies]
 polyforge-core = { path = "../polyforge-core", version = "0.3.0" }

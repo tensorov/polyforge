@@ -77,11 +77,12 @@ fn backend_without_sandbox_executor_is_rejected_exit2() {
 /// Firecracker row: only meaningful once SOME sandbox backend feature is
 /// compiled (otherwise the kind-level gate rejects first, which the
 /// default-build module pins separately). Fails closed naming the actual
-/// missing prerequisite (/dev/kvm, binaries) or the pending backend.
+/// missing prerequisite (/dev/kvm, binaries, backend feature, env assets).
 #[cfg(any(
     feature = "sandbox-mock",
     feature = "sandbox-container",
-    feature = "sandbox-gvisor"
+    feature = "sandbox-gvisor",
+    feature = "sandbox-firecracker"
 ))]
 #[test]
 fn firecracker_request_fails_closed_naming_prerequisite() {
@@ -102,10 +103,14 @@ fn firecracker_request_fails_closed_naming_prerequisite() {
     );
     assert_eq!(exit_code(&out), 2, "stderr: {}", stderr(&out));
     let err = stderr(&out);
-    // No-kvm hosts name /dev/kvm; kvm hosts without binaries name them; a
-    // fully capable host reports the pending backend. All fail closed.
-    let names_prerequisite =
-        err.contains("/dev/kvm") || err.contains("binaries") || err.contains("pending T9");
+    // No-kvm hosts name /dev/kvm; kvm hosts without binaries name them;
+    // builds without the backend feature name it; a capable build without
+    // provisioned assets names the POLYFORGE_FC_* variables. All fail
+    // closed before any spawn.
+    let names_prerequisite = err.contains("/dev/kvm")
+        || err.contains("binaries")
+        || err.contains("requires feature")
+        || err.contains("POLYFORGE_FC_");
     assert!(names_prerequisite, "unexpected error: {err}");
 }
 

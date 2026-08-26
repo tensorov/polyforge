@@ -1,0 +1,54 @@
+# PolyForge T9 Firecracker control plane image.
+#
+# Packages the firecracker + jailer binaries (SAME version, musl static)
+# plus python3 and curl for external API driving. Kernel and rootfs assets
+# are deliberately NOT baked in: they are attestation-critical pinned
+# artifacts mounted at runtime (pinning strategy in
+# README-host-prereqs.md).
+#
+# Run posture (fadams/firecracker-in-docker PoC pattern; nested virt NOT
+# needed, KVM passthrough suffices):
+#   docker run -d --name pf-fc-control \
+#     --device=/dev/kvm --device=/dev/net/tun \
+#     --cap-add=NET_ADMIN \
+#     --group-add "$(getent group kvm | cut -d: -f3)" \
+#     -v /opt/polyforge-fc:/assets:ro \
+#     polyforge-fc-controlplane
+#
+# No ports are exposed: every control channel is a unix socket.
+FROM debian:bookworm-slim
+
+ARG FC_VERSION=1.9.1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the release binaries: musl static firecracker + jailer of the
+# SAME version (mandatory prod pairing per the T8 spike research).
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/v${FC_VERSION}/firecracker-v${FC_VERSION}-${arch}.tgz" \
+      | tar xz -C /tmp; \
+    cp "/tmp/release-v${FC_VERSION}-${arch}/firecracker-v${FC_VERSION}-${arch}" /usr/local/bin/firecracker; \
+    cp "/tmp/release-v${FC_VERSION}-${arch}/jailer-v${FC_VERSION}-${arch}" /usr/local/bin/jailer; \
+    chmod 0755 /usr/local/bin/firecracker /usr/local/bin/jailer; \
+    rm -rf "/tmp/release-v${FC_VERSION}-${arch}"; \
+    firecracker --version
+
+# Non-root operator account. The host kvm gid differs per machine, so it is
+# attached at RUNTIME via --group-add (see the run posture above); non-root
+# with the kvm group is sufficient because /dev/kvm access is a file
+# permission, not a capability.
+RUN useradd --uid 1000 --create-home --shell /bin/bash pf
+USER pf
+WORKDIR /home/pf
+
+LABEL org.opencontainers.image.title="polyforge-fc-controlplane" \
+      org.opencontainers.image.description="PolyForge Firecracker control plane: firecracker+jailer v${FC_VERSION}, driven externally over unix sockets" \
+      org.opencontainers.image.source="https://github.com/tensorov/polyforge" \
+      org.opencontainers.image.documentation="deploy/firecracker/README-host-prereqs.md"
+
+# Control plane idles; the toolrunner drives it externally over unix
+# sockets. Nothing to EXPOSE.
+ENTRYPOINT ["sleep", "infinity"]

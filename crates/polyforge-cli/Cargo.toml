@@ -24,3 +24,4 @@ sha2 = "0.10"
 sandbox-mock = ["polyforge-toolrunner/sandbox-mock"]
 sandbox-container = ["polyforge-toolrunner/sandbox-container"]
 sandbox-gvisor = ["polyforge-toolrunner/sandbox-gvisor"]
+sandbox-firecracker = ["polyforge-toolrunner/sandbox-firecracker"]

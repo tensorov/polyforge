@@ -9,7 +9,9 @@
 //! dependent rows assert consistency with the T5 prober so they hold on any
 //! machine):
 //! - firecracker request fails closed BEFORE any state write, naming the
-//!   actual missing prerequisite (/dev/kvm, binaries) or the pending backend.
+//!   actual missing prerequisite (/dev/kvm, binaries, backend feature, env
+//!   assets); with the T9 backend compiled in AND the host fully
+//!   provisioned it records the tier instead.
 //! - auto honors the prober and records the resolved tier.
 //! - explicit container is honored when available and never silently
 //!   replaced by a conflicting re-selection.
@@ -24,21 +26,41 @@ use polyforge_toolrunner::{
 
 #[test]
 fn sequenced_t10_selection_matrix() {
-    // (1) Firecracker: rejected BEFORE any state write, naming the actual
-    // prerequisite (/dev/kvm, binaries) or the pending backend; Process
-    // stays selectable afterwards, proving nothing was recorded.
-    let expected = match select_tier(Some(SandboxTier::Firecracker), &ProdProbe) {
-        Err(e) => e.to_string(),
-        Ok(_) => "firecracker backend pending T9: microVM executor not implemented".to_string(),
-    };
-    let err = init_executor_with_backend(ExecutorKind::Sandbox, Some(SandboxTier::Firecracker))
-        .expect_err("the firecracker backend does not exist yet");
-    assert_eq!(err, expected, "error must name the actual prerequisite");
-    assert_eq!(
-        selected_sandbox_tier(),
-        None,
-        "a rejected tier request must leave no recorded tier"
-    );
+    // (1) Firecracker: rejected BEFORE any state write unless the T9
+    // backend is compiled in AND the host is fully provisioned (probe plus
+    // env assets). Every failing case names an actual prerequisite and
+    // records no tier; a success requires exactly that full provisioning.
+    match init_executor_with_backend(ExecutorKind::Sandbox, Some(SandboxTier::Firecracker)) {
+        Err(err) => {
+            let names_prerequisite = err.contains("/dev/kvm")
+                || err.contains("binaries")
+                || err.contains("requires feature")
+                || err.contains("POLYFORGE_FC_");
+            assert!(
+                names_prerequisite,
+                "error must name the actual prerequisite: {err}"
+            );
+            assert_eq!(
+                selected_sandbox_tier(),
+                None,
+                "a rejected tier request must leave no recorded tier"
+            );
+        }
+        Ok(()) => {
+            assert!(
+                select_tier(Some(SandboxTier::Firecracker), &ProdProbe).is_ok()
+                    && cfg!(feature = "sandbox-firecracker"),
+                "success requires the compiled backend plus a fully probed host"
+            );
+            assert_eq!(
+                selected_sandbox_tier(),
+                Some(SandboxTier::Firecracker),
+                "a successful selection records the firecracker tier"
+            );
+            eprintln!("firecracker tier recorded; remaining matrix rows skipped (globals pinned)");
+            return;
+        }
+    }
 
     // (2) A tier request on the process executor is rejected at the
     // contract level.

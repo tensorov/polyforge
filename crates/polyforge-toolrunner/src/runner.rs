@@ -357,6 +357,27 @@ impl Executor for TieredGvisorExecutor {
 #[cfg(feature = "sandbox-gvisor")]
 static TIERED_GVISOR_EXECUTOR: TieredGvisorExecutor = TieredGvisorExecutor;
 
+/// Zero-sized adapter resolving the Firecracker config from the process
+/// environment per run so environment errors surface as normal
+/// [`RunnerError`]s instead of panics behind a `&'static` singleton.
+#[cfg(all(unix, feature = "sandbox-firecracker"))]
+struct TieredFcExecutor;
+
+#[cfg(all(unix, feature = "sandbox-firecracker"))]
+impl Executor for TieredFcExecutor {
+    fn run(&self, tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
+        let config = crate::fc_exec::FcConfig::from_environment()?;
+        crate::fc_exec::FcExecutor::new(config).run(tool, args)
+    }
+
+    fn label(&self) -> &'static str {
+        "sandbox-firecracker"
+    }
+}
+
+#[cfg(all(unix, feature = "sandbox-firecracker"))]
+static TIERED_FC_EXECUTOR: TieredFcExecutor = TieredFcExecutor;
+
 /// Which concrete backend serves [`ExecutorKind::Sandbox`] in this build on
 /// this host. An EXPLICIT tier (recorded by [`init_executor_with_backend`])
 /// wins and dispatches to that tier's backend; with no recorded tier the
@@ -404,9 +425,20 @@ fn tiered_sandbox_executor(tier: SandboxTier) -> &'static dyn Executor {
                 &PROCESS_EXECUTOR
             }
         }
-        // Rejected by init ("pending T9") before any state is written; the
-        // arm exists only so the match stays exhaustive.
-        SandboxTier::Firecracker => &PROCESS_EXECUTOR,
+        // T9 landed the backend: when compiled in, selection validates the
+        // probed host AND the provisioned assets; without the feature the
+        // tier was already rejected at init, so the fallback keeps the
+        // match total.
+        SandboxTier::Firecracker => {
+            #[cfg(all(unix, feature = "sandbox-firecracker"))]
+            {
+                &TIERED_FC_EXECUTOR
+            }
+            #[cfg(not(all(unix, feature = "sandbox-firecracker")))]
+            {
+                &PROCESS_EXECUTOR
+            }
+        }
     }
 }
 
@@ -536,7 +568,8 @@ pub fn init_executor_with_backend(
             if !cfg!(any(
                 feature = "sandbox-mock",
                 feature = "sandbox-container",
-                feature = "sandbox-gvisor"
+                feature = "sandbox-gvisor",
+                feature = "sandbox-firecracker"
             )) {
                 return Err("sandbox executor requires feature sandbox-mock".to_string());
             }
@@ -590,9 +623,19 @@ fn prepare_sandbox_tier(tier: SandboxTier) -> Result<(), String> {
         SandboxTier::Firecracker => {
             // Probe first so the error names the actual missing prerequisite
             // (/dev/kvm, binaries); only a fully capable host reaches the
-            // pending-backend report.
+            // backend feature and asset checks.
             select_tier(Some(tier), &ProdProbe).map_err(|e| e.to_string())?;
-            Err("firecracker backend pending T9: microVM executor not implemented".to_string())
+            #[cfg(all(unix, feature = "sandbox-firecracker"))]
+            {
+                crate::fc_exec::FcConfig::from_environment()
+                    .map(|_| ())
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(())
+            }
+            #[cfg(not(all(unix, feature = "sandbox-firecracker")))]
+            {
+                Err("sandbox backend firecracker requires feature sandbox-firecracker".to_string())
+            }
         }
         SandboxTier::Container => {
             #[cfg(feature = "sandbox-container")]
@@ -713,7 +756,22 @@ fn tiered_sandbox_digest(tier: SandboxTier) -> Option<String> {
                 None
             }
         }
-        SandboxTier::Firecracker => None,
+        SandboxTier::Firecracker => {
+            #[cfg(all(unix, feature = "sandbox-firecracker"))]
+            {
+                crate::fc_exec::FcConfig::from_environment()
+                    .ok()
+                    .and_then(|config| {
+                        crate::fc_exec::FcExecutor::new(config)
+                            .executor_digest()
+                            .ok()
+                    })
+            }
+            #[cfg(not(all(unix, feature = "sandbox-firecracker")))]
+            {
+                None
+            }
+        }
     }
 }
 

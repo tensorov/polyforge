@@ -8,6 +8,8 @@
 
 #[cfg(feature = "sandbox-container")]
 pub mod container_exec;
+#[cfg(all(unix, feature = "sandbox-firecracker"))]
+pub mod fc_exec;
 #[cfg(feature = "sandbox-gvisor")]
 pub mod gvisor_exec;
 pub mod prober;
@@ -21,6 +23,8 @@ pub use container_exec::{
     ContainerExecutor, DEFAULT_SANDBOX_IMAGE, POLYFORGE_SANDBOX_IMAGE_ENV,
     POLYFORGE_SANDBOX_RUNTIME_ENV,
 };
+#[cfg(all(unix, feature = "sandbox-firecracker"))]
+pub use fc_exec::{FcConfig, FcExecutor, JailerConfig};
 #[cfg(feature = "sandbox-gvisor")]
 pub use gvisor_exec::{compose_digest, GvisorConfig, GvisorExecutor, GvisorRoute};
 pub use prober::SandboxTier;
