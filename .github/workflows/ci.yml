@@ -116,11 +116,11 @@ jobs:
 
       - name: Run mutations (in-diff)
         if: env.RUN_SCOPE == 'in-diff'
-        run: cargo mutants --no-shuffle -vV --in-diff git.diff $(for p in $MUTANT_PACKAGES; do printf -- '-p %s ' "$p"; done) --timeout=500 --build-timeout=500
+        run: cargo mutants --no-shuffle -j4 -vV --in-diff git.diff $(for p in $MUTANT_PACKAGES; do printf -- '-p %s ' "$p"; done) --timeout=500 --build-timeout=500
 
       - name: Run mutations (full, test files changed)
         if: env.RUN_SCOPE == 'full'
-        run: cargo mutants --no-shuffle -vV $(for p in $MUTANT_PACKAGES; do printf -- '-p %s ' "$p"; done) --timeout=500 --build-timeout=500
+        run: cargo mutants --no-shuffle -j4 -vV $(for p in $MUTANT_PACKAGES; do printf -- '-p %s ' "$p"; done) --timeout=500 --build-timeout=500
 
       - name: Skip mutations (no mutants in scope)
         if: env.RUN_SCOPE == 'skip'
