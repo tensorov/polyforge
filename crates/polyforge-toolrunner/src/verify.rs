@@ -298,17 +298,17 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Mutex;
     use std::time::Duration;
 
     use crate::runner::lookup;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    // with_git_repo_cwd mutates the process-global CWD, so concurrent users
-    // race: one test can capture `prev` as another test's temp repo and then
-    // fail to restore it after that repo is deleted. Serialize all callers.
-    static GIT_CWD_LOCK: Mutex<()> = Mutex::new(());
+    // Crate-wide cwd-flip/spawn lock (defined in runner.rs): serializes
+    // with_git_repo_cwd users against each other AND against every test
+    // that spawns tool children, so no child ever inherits a cwd whose
+    // directory is about to be deleted (ENOENT getcwd failure).
+    use crate::runner::TOOL_SPAWN_LOCK as GIT_CWD_LOCK;
 
     fn tmp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join("pf-todo6-tests");
@@ -401,6 +401,7 @@ mod tests {
 
     #[test]
     fn test_failed_run_appends_discrepancy_entry() {
+        let _spawn_guard = GIT_CWD_LOCK.lock().unwrap();
         let path = tmp_path("discrepancy");
         let mut ledger = Ledger::new(&path);
         let claim_id = append_claim(&mut ledger, "T6");
@@ -445,6 +446,7 @@ mod tests {
 
     #[test]
     fn test_verify_promotes_claim_with_tool_attestation() {
+        let _spawn_guard = GIT_CWD_LOCK.lock().unwrap();
         let path = tmp_path("promote");
         let mut ledger = Ledger::new(&path);
         let claim_id = append_claim(&mut ledger, "T6");
@@ -472,6 +474,7 @@ mod tests {
     // never the claim's `ts` datum ("ts-1" in fixtures).
     #[test]
     fn test_attestation_ts_is_wallclock_epoch_millis() {
+        let _spawn_guard = GIT_CWD_LOCK.lock().unwrap();
         let path = tmp_path("wallclock-att");
         let mut ledger = Ledger::new(&path);
         let claim_id = append_claim(&mut ledger, "T6");
@@ -496,6 +499,7 @@ mod tests {
     // T6: the discrepancy ts (failed-run trace) must also be wall-clock.
     #[test]
     fn test_discrepancy_ts_is_wallclock_epoch_millis() {
+        let _spawn_guard = GIT_CWD_LOCK.lock().unwrap();
         let path = tmp_path("wallclock-disc");
         let mut ledger = Ledger::new(&path);
         let claim_id = append_claim(&mut ledger, "T6");
@@ -538,6 +542,7 @@ mod tests {
 
     #[test]
     fn test_verify_fails_on_tool_error() {
+        let _spawn_guard = GIT_CWD_LOCK.lock().unwrap();
         let path = tmp_path("tool-error");
         let mut ledger = Ledger::new(&path);
         let claim_id = append_claim(&mut ledger, "T6");
@@ -559,6 +564,7 @@ mod tests {
 
     #[test]
     fn test_appended_entry_is_verified_state() {
+        let _spawn_guard = GIT_CWD_LOCK.lock().unwrap();
         let path = tmp_path("verified-state");
         let mut ledger = Ledger::new(&path);
         let claim_id = append_claim(&mut ledger, "T6");

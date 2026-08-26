@@ -29,10 +29,20 @@ fn set_once_selection_rejects_conflicting_reinit() {
             "set-once guard must pin the recorded kind: {err}"
         );
     }
-    #[cfg(not(feature = "sandbox-mock"))]
+    #[cfg(all(not(feature = "sandbox-mock"), feature = "sandbox-container"))]
     {
-        // Without the feature the fail-closed gate rejects Sandbox before
-        // any state is written; the exact message is part of the contract.
+        // Container-only build: Sandbox passes the widened gate (any sandbox
+        // backend feature) and dies at the set-once check instead.
+        assert_eq!(
+            err, "executor already initialized to process",
+            "set-once guard must pin the recorded kind: {err}"
+        );
+    }
+    #[cfg(not(any(feature = "sandbox-mock", feature = "sandbox-container")))]
+    {
+        // Without any sandbox feature the fail-closed gate rejects Sandbox
+        // before any state is written; the exact message is part of the
+        // contract.
         assert_eq!(err, "sandbox executor requires feature sandbox-mock");
     }
 

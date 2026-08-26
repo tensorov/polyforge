@@ -18,6 +18,14 @@ path = "src/lib.rs"
 # Gate for the sandbox execution backend (T10 mock adapter). Empty until the
 # backend lands; selecting ExecutorKind::Sandbox without it fails closed.
 sandbox-mock = []
+# Gate for the gVisor (runsc) execution backend (T7). Empty: std-only, no new
+# deps. Without the feature the module is not compiled at all; with it, e2e
+# tests skip cleanly when runsc is absent on the host.
+sandbox-gvisor = []
+# Gate for the real container backend (T6 docker/podman executor). Empty by
+# default: no new dependencies, std::process::Command only. When compiled in,
+# a probed Container tier routes ExecutorKind::Sandbox to ContainerExecutor.
+sandbox-container = []
 
 [dependencies]
 polyforge-core = { path = "../polyforge-core", version = "0.3.0" }
