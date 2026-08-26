@@ -15,3 +15,12 @@ polyforge-core = { path = "../../crates/polyforge-core", version = "0.3.0" }
 polyforge-toolrunner = { path = "../../crates/polyforge-toolrunner", version = "0.3.0" }
 serde_json = "1"
 sha2 = "0.10"
+
+[features]
+# Forward the toolrunner sandbox backends so `cargo build -p polyforge-cli
+# --features sandbox-container` produces an operator binary whose
+# `--executor sandbox --sandbox-backend <tier>` selection can actually
+# dispatch. Empty by default: the default build keeps legacy behavior.
+sandbox-mock = ["polyforge-toolrunner/sandbox-mock"]
+sandbox-container = ["polyforge-toolrunner/sandbox-container"]
+sandbox-gvisor = ["polyforge-toolrunner/sandbox-gvisor"]

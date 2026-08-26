@@ -25,6 +25,8 @@ use std::time::Duration;
 use polyforge_core::evidence::EvidenceEntry;
 use sha2::{Digest, Sha256};
 
+use crate::prober::{select_tier, ProdProbe, SandboxTier};
+
 /// A tool on the allowlist.
 ///
 /// When handed to [`run`] / [`run_with_timeout`] / [`spawn`], only `name`
@@ -310,12 +312,62 @@ fn container_executor() -> &'static crate::container_exec::ContainerExecutor {
     })
 }
 
+/// Image-ref env shared with the container backend. Declared locally because
+/// `container_exec` (the public const's home) is feature-gated and the
+/// gVisor backend must compile without it.
+#[cfg(feature = "sandbox-gvisor")]
+const GVISOR_IMAGE_ENV: &str = "POLYFORGE_SANDBOX_IMAGE";
+
+/// Build the gVisor executor config from the process environment: image from
+/// `POLYFORGE_SANDBOX_IMAGE` (MUST be digest-pinned; tags are rejected), the
+/// current checkout mounted read-only.
+#[cfg(feature = "sandbox-gvisor")]
+fn gvisor_config_from_env() -> Result<crate::gvisor_exec::GvisorConfig, String> {
+    let image = match std::env::var(GVISOR_IMAGE_ENV) {
+        Ok(img) if !img.trim().is_empty() => img.trim().to_string(),
+        _ => {
+            return Err(format!(
+                "gVisor backend requires {GVISOR_IMAGE_ENV} pointing at a \
+                 digest-pinned image (repo@sha256:<64 hex>)"
+            ))
+        }
+    };
+    let checkout = std::env::current_dir().map_err(|e| format!("resolve checkout dir: {e}"))?;
+    crate::gvisor_exec::GvisorConfig::new(image, checkout).map_err(|e| format!("{e:?}"))
+}
+
+/// Zero-sized adapter resolving the gVisor config per run so environment
+/// errors surface as normal [`RunnerError`]s instead of panics behind a
+/// `&'static` singleton.
+#[cfg(feature = "sandbox-gvisor")]
+struct TieredGvisorExecutor;
+
+#[cfg(feature = "sandbox-gvisor")]
+impl Executor for TieredGvisorExecutor {
+    fn run(&self, tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
+        let config = gvisor_config_from_env().map_err(RunnerError::Spawn)?;
+        crate::gvisor_exec::GvisorExecutor::new(config).run(tool, args)
+    }
+
+    fn label(&self) -> &'static str {
+        "sandbox-gvisor"
+    }
+}
+
+#[cfg(feature = "sandbox-gvisor")]
+static TIERED_GVISOR_EXECUTOR: TieredGvisorExecutor = TieredGvisorExecutor;
+
 /// Which concrete backend serves [`ExecutorKind::Sandbox`] in this build on
-/// this host: the real container backend when compiled in AND probed
-/// available (real isolation beats mocks), else the mock under
+/// this host. An EXPLICIT tier (recorded by [`init_executor_with_backend`])
+/// wins and dispatches to that tier's backend; with no recorded tier the
+/// historical rules apply unchanged: the real container backend when compiled
+/// in AND probed available (real isolation beats mocks), else the mock under
 /// `sandbox-mock`, else the defensive process fallback for selections that
 /// `init_executor` would have rejected before any state was written.
 fn sandbox_executor() -> &'static dyn Executor {
+    if let Some(tier) = selected_sandbox_tier() {
+        return tiered_sandbox_executor(tier);
+    }
     #[cfg(feature = "sandbox-container")]
     if crate::container_exec::container_backend_active() {
         return container_executor();
@@ -324,6 +376,38 @@ fn sandbox_executor() -> &'static dyn Executor {
     return &SANDBOX_MOCK_EXECUTOR;
     #[cfg(not(feature = "sandbox-mock"))]
     &PROCESS_EXECUTOR
+}
+
+/// Concrete backend for an EXPLICITLY selected tier (T10 dispatch). Tiers
+/// whose backend feature is missing are unreachable here (rejected during
+/// [`init_executor_with_backend`] before any state was written); the
+/// defensive process fallback keeps the mapping total without ever panicking.
+fn tiered_sandbox_executor(tier: SandboxTier) -> &'static dyn Executor {
+    match tier {
+        SandboxTier::Container => {
+            #[cfg(feature = "sandbox-container")]
+            {
+                container_executor()
+            }
+            #[cfg(not(feature = "sandbox-container"))]
+            {
+                &PROCESS_EXECUTOR
+            }
+        }
+        SandboxTier::Gvisor => {
+            #[cfg(feature = "sandbox-gvisor")]
+            {
+                &TIERED_GVISOR_EXECUTOR
+            }
+            #[cfg(not(feature = "sandbox-gvisor"))]
+            {
+                &PROCESS_EXECUTOR
+            }
+        }
+        // Rejected by init ("pending T9") before any state is written; the
+        // arm exists only so the match stays exhaustive.
+        SandboxTier::Firecracker => &PROCESS_EXECUTOR,
+    }
 }
 
 /// Which execution backend attestations run under.
@@ -383,6 +467,161 @@ pub fn init_executor(kind: ExecutorKind) -> Result<(), String> {
     }
 }
 
+/// Internal codes stored in [`SANDBOX_TIER`]. `0` means "no explicit tier
+/// recorded" and keeps the legacy backend rules.
+const TIER_UNSET: u8 = 0;
+const TIER_CONTAINER: u8 = 1;
+const TIER_GVISOR: u8 = 2;
+const TIER_FIRECRACKER: u8 = 3;
+
+static SANDBOX_TIER: AtomicU8 = AtomicU8::new(TIER_UNSET);
+
+fn tier_code(tier: SandboxTier) -> u8 {
+    match tier {
+        SandboxTier::Container => TIER_CONTAINER,
+        SandboxTier::Gvisor => TIER_GVISOR,
+        SandboxTier::Firecracker => TIER_FIRECRACKER,
+    }
+}
+
+fn tier_name_of_code(code: u8) -> &'static str {
+    match code {
+        TIER_CONTAINER => "container",
+        TIER_GVISOR => "gvisor",
+        TIER_FIRECRACKER => "firecracker",
+        _ => "auto",
+    }
+}
+
+/// The explicitly selected sandbox tier, if any. `None` means either no
+/// Sandbox selection at all or a legacy [`init_executor`] selection whose
+/// concrete backend follows the historical mock/container-auto rules and
+/// whose attestations carry no tier prefix.
+pub fn selected_sandbox_tier() -> Option<SandboxTier> {
+    match SANDBOX_TIER.load(Ordering::SeqCst) {
+        TIER_CONTAINER => Some(SandboxTier::Container),
+        TIER_GVISOR => Some(SandboxTier::Gvisor),
+        TIER_FIRECRACKER => Some(SandboxTier::Firecracker),
+        _ => None,
+    }
+}
+
+/// Select the execution backend for this process WITH an explicit sandbox
+/// tier request (T10). Same set-once semantics as [`init_executor`], plus:
+///
+/// * [`ExecutorKind::Process`] rejects any tier request: `--sandbox-backend`
+///   only makes sense with `--executor sandbox`.
+/// * [`ExecutorKind::Sandbox`] resolves the tier BEFORE any state is written
+///   (fail closed): `None` auto-selects through
+///   [`crate::prober::select_tier`] against the real host, `Some(tier)`
+///   verifies exactly that tier and never falls back. A requested-but-
+///   unavailable tier returns an actionable error naming the missing
+///   prerequisite (/dev/kvm, container runtime, runsc registration), a
+///   Firecracker resolution reports the not-yet-implemented backend, and a
+///   resolved tier whose backend feature is not compiled in names that
+///   feature. Nothing spawns and no ledger write happens on any error path.
+pub fn init_executor_with_backend(
+    kind: ExecutorKind,
+    backend: Option<SandboxTier>,
+) -> Result<(), String> {
+    let mut resolved_tier: Option<SandboxTier> = None;
+    let code = match kind {
+        ExecutorKind::Process => {
+            if backend.is_some() {
+                return Err("--sandbox-backend requires --executor sandbox".to_string());
+            }
+            KIND_PROCESS
+        }
+        ExecutorKind::Sandbox => {
+            if !cfg!(any(
+                feature = "sandbox-mock",
+                feature = "sandbox-container",
+                feature = "sandbox-gvisor"
+            )) {
+                return Err("sandbox executor requires feature sandbox-mock".to_string());
+            }
+            let tier = match backend {
+                Some(tier) => {
+                    prepare_sandbox_tier(tier)?;
+                    tier
+                }
+                None => {
+                    let tier = select_tier(None, &ProdProbe).map_err(|e| e.to_string())?;
+                    prepare_sandbox_tier(tier)?;
+                    tier
+                }
+            };
+            resolved_tier = Some(tier);
+            KIND_SANDBOX
+        }
+    };
+    match EXECUTOR_KIND.compare_exchange(KIND_UNSET, code, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => {}
+        Err(prev) if prev == code => {}
+        Err(prev) => {
+            return Err(format!(
+                "executor already initialized to {}",
+                kind_name_of_code(prev)
+            ))
+        }
+    }
+    if let Some(tier) = resolved_tier {
+        let code = tier_code(tier);
+        match SANDBOX_TIER.compare_exchange(TIER_UNSET, code, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => {}
+            Err(prev) if prev == code => {}
+            Err(prev) => {
+                return Err(format!(
+                    "sandbox backend already initialized to {}",
+                    tier_name_of_code(prev)
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fail-closed validation of ONE requested or auto-resolved sandbox tier,
+/// run BEFORE any selection state is written. Explicit tiers verify through
+/// the T5 prober and never fall back; each tier additionally requires its
+/// backend feature to be compiled in. No spawning.
+fn prepare_sandbox_tier(tier: SandboxTier) -> Result<(), String> {
+    match tier {
+        SandboxTier::Firecracker => {
+            // Probe first so the error names the actual missing prerequisite
+            // (/dev/kvm, binaries); only a fully capable host reaches the
+            // pending-backend report.
+            select_tier(Some(tier), &ProdProbe).map_err(|e| e.to_string())?;
+            Err("firecracker backend pending T9: microVM executor not implemented".to_string())
+        }
+        SandboxTier::Container => {
+            #[cfg(feature = "sandbox-container")]
+            {
+                select_tier(Some(tier), &ProdProbe).map_err(|e| e.to_string())?;
+                Ok(())
+            }
+            #[cfg(not(feature = "sandbox-container"))]
+            {
+                let _ = tier;
+                Err("sandbox backend container requires feature sandbox-container".to_string())
+            }
+        }
+        SandboxTier::Gvisor => {
+            #[cfg(feature = "sandbox-gvisor")]
+            {
+                select_tier(Some(tier), &ProdProbe).map_err(|e| e.to_string())?;
+                gvisor_config_from_env()?;
+                Ok(())
+            }
+            #[cfg(not(feature = "sandbox-gvisor"))]
+            {
+                let _ = tier;
+                Err("sandbox backend gvisor requires feature sandbox-gvisor".to_string())
+            }
+        }
+    }
+}
+
 /// Render an internal selection code as its flag-facing name (diagnostics
 /// only; unknown codes render as `process` because that is the effective
 /// fallback).
@@ -428,6 +667,9 @@ pub(crate) fn executor_digest_for_kind(kind: ExecutorKind) -> Option<String> {
 }
 
 fn sandbox_executor_digest() -> Option<String> {
+    if let Some(tier) = selected_sandbox_tier() {
+        return tiered_sandbox_digest(tier);
+    }
     #[cfg(feature = "sandbox-container")]
     if crate::container_exec::container_backend_active() {
         let exec = container_executor();
@@ -437,6 +679,42 @@ fn sandbox_executor_digest() -> Option<String> {
     return Some(crate::sandbox_mock::executor_digest());
     #[cfg(not(feature = "sandbox-mock"))]
     None
+}
+
+/// Record-only identity for an explicitly selected tier. Digest formulas
+/// intentionally diverge per tier (container: image-at-digest + checkout
+/// tree; gVisor: runsc version | platform | image | structural config); the
+/// caller layers the tier prefix on top precisely so consumers can tell the
+/// formulas apart. Unavailable backends here are unreachable (rejected at
+/// init) and resolve to `None` defensively.
+fn tiered_sandbox_digest(tier: SandboxTier) -> Option<String> {
+    match tier {
+        SandboxTier::Container => {
+            #[cfg(feature = "sandbox-container")]
+            {
+                let exec = container_executor();
+                crate::container_exec::current_run_digest(exec.runtime(), exec.image_ref())
+            }
+            #[cfg(not(feature = "sandbox-container"))]
+            {
+                None
+            }
+        }
+        SandboxTier::Gvisor => {
+            #[cfg(feature = "sandbox-gvisor")]
+            {
+                let config = gvisor_config_from_env().ok()?;
+                let exec = crate::gvisor_exec::GvisorExecutor::new(config);
+                let route = exec.route().ok()?;
+                exec.executor_digest(route).ok()
+            }
+            #[cfg(not(feature = "sandbox-gvisor"))]
+            {
+                None
+            }
+        }
+        SandboxTier::Firecracker => None,
+    }
 }
 
 /// Module-level accessor returning the selected execution backend. The
@@ -453,9 +731,16 @@ pub(crate) fn executor() -> &'static dyn Executor {
 /// Record-only executor identity for attestation payloads: `None` for the
 /// process backend (legacy payloads stay byte-identical, no metadata key),
 /// `Some(digest)` only when a non-process executor performed the run, so
-/// attestations never claim an executor they did not use.
+/// attestations never claim an executor they did not use. An explicitly
+/// selected sandbox tier prefixes the digest (`fc:` / `gvisor:` /
+/// `container:`) so consumers can tell the intentionally divergent per-tier
+/// digest formulas apart; legacy selections keep the bare digest.
 pub(crate) fn active_executor_digest() -> Option<String> {
-    executor_digest_for_kind(selected_executor_kind())
+    let digest = executor_digest_for_kind(selected_executor_kind())?;
+    Some(match selected_sandbox_tier() {
+        Some(tier) => format!("{}:{digest}", tier.label()),
+        None => digest,
+    })
 }
 
 /// Run an allowlisted tool to completion and capture its output + attestation

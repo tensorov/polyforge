@@ -23,9 +23,11 @@ pub use container_exec::{
 };
 #[cfg(feature = "sandbox-gvisor")]
 pub use gvisor_exec::{compose_digest, GvisorConfig, GvisorExecutor, GvisorRoute};
+pub use prober::SandboxTier;
 pub use runner::{
-    allowlist, env_fingerprint, init_executor, lookup, parse_timeout, run, run_with_timeout, spawn,
-    ExecutorKind, RunOutput, RunnerError, Tool, DEFAULT_TOOL_TIMEOUT_SECS, PF_TOOL_TIMEOUT_SECS,
+    allowlist, env_fingerprint, init_executor, init_executor_with_backend, lookup, parse_timeout,
+    run, run_with_timeout, selected_sandbox_tier, spawn, ExecutorKind, RunOutput, RunnerError,
+    Tool, DEFAULT_TOOL_TIMEOUT_SECS, PF_TOOL_TIMEOUT_SECS,
 };
 #[cfg(feature = "sandbox-mock")]
 pub use sandbox_mock::{executor_digest, MockSandboxExecutor, MOCK_IMAGE_ID};

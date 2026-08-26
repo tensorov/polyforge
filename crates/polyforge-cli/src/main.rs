@@ -794,7 +794,7 @@ fn cmd_coverage_check(report_path: &str) -> Result<ExitCode, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let args = match apply_executor_flag(args) {
+    let args = match apply_global_flags(args) {
         Ok(rest) => rest,
         Err(msg) => {
             eprintln!("error: {msg}");
@@ -810,30 +810,76 @@ fn main() -> ExitCode {
     }
 }
 
-/// Global executor selection: `pf --executor <process|sandbox> <command> ...`.
-/// The flag is only honored as the FIRST argument and is validated + applied
-/// before dispatch, so an invalid value exits 2 before any spawn or ledger
-/// write. Absent flag returns the arguments untouched (legacy behavior).
-fn apply_executor_flag(mut args: Vec<String>) -> Result<Vec<String>, String> {
-    if args.first().map(String::as_str) != Some("--executor") {
-        return Ok(args);
+const EXECUTOR_USAGE: &str = "usage: pf [--executor <process|sandbox>] <command> [args...]";
+
+/// Global sandbox tier selection: `pf --sandbox-backend
+/// <auto|firecracker|gvisor|container> ...`. Same conventions as
+/// `--executor`: leading global position, pair-consumed, validated before
+/// dispatch (usage error exits 2 pre-spawn), and it requires `--executor
+/// sandbox` to be selected in the same invocation.
+const SANDBOX_BACKEND_USAGE: &str = "usage: pf [--executor <process|sandbox>] \
+[--sandbox-backend <auto|firecracker|gvisor|container>] <command> [args...]";
+
+/// Leading global flags (`--executor`, `--sandbox-backend`), any order, each
+/// consumed as a flag+value pair; everything else is dispatch payload and
+/// passes through byte-identical. Selection is applied once after parsing so
+/// an invalid value anywhere in the leading block exits 2 before any spawn,
+/// ledger write, or partial initialization.
+fn apply_global_flags(mut args: Vec<String>) -> Result<Vec<String>, String> {
+    let mut kind: Option<polyforge_toolrunner::ExecutorKind> = None;
+    let mut backend: Option<Option<polyforge_toolrunner::SandboxTier>> = None;
+    while let Some(flag) = args.first().map(String::as_str) {
+        match flag {
+            "--executor" => {
+                if args.len() < 2 {
+                    return Err(EXECUTOR_USAGE.to_string());
+                }
+                kind = Some(parse_executor_kind(&args[1])?);
+                args.drain(..2);
+            }
+            "--sandbox-backend" => {
+                if args.len() < 2 {
+                    return Err(SANDBOX_BACKEND_USAGE.to_string());
+                }
+                backend = Some(parse_sandbox_backend(&args[1])?);
+                args.drain(..2);
+            }
+            _ => break,
+        }
     }
-    if args.len() < 2 {
-        return Err(EXECUTOR_USAGE.to_string());
+    match (kind, backend) {
+        (None, None) => {}
+        (Some(kind), None) => polyforge_toolrunner::init_executor(kind)?,
+        (None, Some(_)) => {
+            return Err(format!(
+                "{SANDBOX_BACKEND_USAGE}; --sandbox-backend requires --executor sandbox"
+            ))
+        }
+        (Some(kind), Some(tier)) => polyforge_toolrunner::init_executor_with_backend(kind, tier)?,
     }
-    let kind = parse_executor_kind(&args[1])?;
-    polyforge_toolrunner::init_executor(kind)?;
-    args.drain(..2);
     Ok(args)
 }
-
-const EXECUTOR_USAGE: &str = "usage: pf [--executor <process|sandbox>] <command> [args...]";
 
 fn parse_executor_kind(name: &str) -> Result<polyforge_toolrunner::ExecutorKind, String> {
     match name {
         "process" => Ok(polyforge_toolrunner::ExecutorKind::Process),
         "sandbox" => Ok(polyforge_toolrunner::ExecutorKind::Sandbox),
         other => Err(format!("{EXECUTOR_USAGE}; unknown executor: {other}")),
+    }
+}
+
+/// `auto` maps to `None` (the toolrunner consults the T5 prober); a named
+/// tier maps to `Some(tier)` and never falls back to another tier.
+fn parse_sandbox_backend(name: &str) -> Result<Option<polyforge_toolrunner::SandboxTier>, String> {
+    use polyforge_toolrunner::SandboxTier;
+    match name {
+        "auto" => Ok(None),
+        "firecracker" => Ok(Some(SandboxTier::Firecracker)),
+        "gvisor" => Ok(Some(SandboxTier::Gvisor)),
+        "container" => Ok(Some(SandboxTier::Container)),
+        other => Err(format!(
+            "{SANDBOX_BACKEND_USAGE}; unknown sandbox backend: {other}"
+        )),
     }
 }
 
@@ -1029,7 +1075,7 @@ fn print_usage() {
         "pf — PolyForge CLI\n\
          \n\
          usage:\n\
-         \x20 pf [--executor <process|sandbox>] <command> [args...]\n\
+         \x20 pf [--executor <process|sandbox>] [--sandbox-backend <auto|firecracker|gvisor|container>] <command> [args...]\n\
          \x20 pf init\n\
          \x20 pf append <kind> <payload> [--task <id>] [--commit <sha>] [--diff <hash>]\n\
          \x20              [--experiment <id>] [--model <fp>] [--run <id>] [--budget <amt>] [--metadata <json>]\n\
@@ -1416,9 +1462,12 @@ mod tests {
         assert_eq!(err, "unknown flag for ledger export: extra");
     }
 
-    // ---- T9 --executor flag plumbing ----
+    // ---- T9 --executor flag plumbing + T10 --sandbox-backend wiring ----
 
-    use super::{apply_executor_flag, parse_executor_kind, EXECUTOR_USAGE};
+    use super::{
+        apply_global_flags, parse_executor_kind, parse_sandbox_backend, EXECUTOR_USAGE,
+        SANDBOX_BACKEND_USAGE,
+    };
 
     #[test]
     fn executor_kind_table() {
@@ -1435,15 +1484,37 @@ mod tests {
     }
 
     #[test]
-    fn apply_executor_flag_absent_leaves_args_untouched() {
+    fn sandbox_backend_parse_table() {
+        assert_eq!(parse_sandbox_backend("auto"), Ok(None));
+        assert_eq!(
+            parse_sandbox_backend("firecracker"),
+            Ok(Some(polyforge_toolrunner::SandboxTier::Firecracker))
+        );
+        assert_eq!(
+            parse_sandbox_backend("gvisor"),
+            Ok(Some(polyforge_toolrunner::SandboxTier::Gvisor))
+        );
+        assert_eq!(
+            parse_sandbox_backend("container"),
+            Ok(Some(polyforge_toolrunner::SandboxTier::Container))
+        );
+        let err = parse_sandbox_backend("bogus").unwrap_err();
+        assert_eq!(
+            err,
+            format!("{SANDBOX_BACKEND_USAGE}; unknown sandbox backend: bogus")
+        );
+    }
+
+    #[test]
+    fn apply_global_flags_absent_leaves_args_untouched() {
         let args = vec!["gate".to_string(), "demo".to_string()];
-        let rest = apply_executor_flag(args.clone()).expect("passthrough");
+        let rest = apply_global_flags(args.clone()).expect("passthrough");
         assert_eq!(rest, args, "no flag means byte-identical legacy dispatch");
     }
 
     #[test]
-    fn apply_executor_flag_process_consumes_pair_and_dispatches_rest() {
-        let rest = apply_executor_flag(vec![
+    fn apply_global_flags_process_consumes_pair_and_dispatches_rest() {
+        let rest = apply_global_flags(vec![
             "--executor".to_string(),
             "process".to_string(),
             "ledger".to_string(),
@@ -1454,8 +1525,8 @@ mod tests {
     }
 
     #[test]
-    fn apply_executor_flag_unknown_value_is_usage_error() {
-        let err = apply_executor_flag(vec![
+    fn apply_global_flags_unknown_executor_value_is_usage_error() {
+        let err = apply_global_flags(vec![
             "--executor".to_string(),
             "firecracker".to_string(),
             "init".to_string(),
@@ -1468,28 +1539,124 @@ mod tests {
     }
 
     #[test]
-    fn apply_executor_flag_missing_value_is_usage_error() {
-        let err = apply_executor_flag(vec!["--executor".to_string()]).unwrap_err();
+    fn apply_global_flags_unknown_backend_value_is_usage_error() {
+        let err = apply_global_flags(vec![
+            "--sandbox-backend".to_string(),
+            "bogus".to_string(),
+            "init".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains(SANDBOX_BACKEND_USAGE) && err.contains("unknown sandbox backend: bogus"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn apply_global_flags_missing_values_are_usage_errors() {
+        let err = apply_global_flags(vec!["--executor".to_string()]).unwrap_err();
         assert_eq!(err, EXECUTOR_USAGE);
+        let err = apply_global_flags(vec!["--sandbox-backend".to_string()]).unwrap_err();
+        assert_eq!(err, SANDBOX_BACKEND_USAGE);
+    }
+
+    /// A tier request without `--executor sandbox` is rejected before any
+    /// selection state is written, in every build.
+    #[test]
+    fn apply_global_flags_backend_requires_sandbox_executor() {
+        let err = apply_global_flags(vec![
+            "--sandbox-backend".to_string(),
+            "container".to_string(),
+            "ledger".to_string(),
+            "tail".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            err.contains("--sandbox-backend requires --executor sandbox")
+                && err.contains(SANDBOX_BACKEND_USAGE),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Both leading global flags compose in either order; the tier rides
+    /// along with the executor selection. Set-once contention from sibling
+    /// tests ("already initialized") is tolerated, never a parse failure.
+    #[test]
+    fn apply_global_flags_both_flags_any_order_reach_dispatch() {
+        let tail = || vec!["ledger".to_string(), "tail".to_string()];
+        for argv in [
+            vec![
+                "--executor".to_string(),
+                "process".to_string(),
+                "--sandbox-backend".to_string(),
+                "auto".to_string(),
+            ],
+            vec![
+                "--sandbox-backend".to_string(),
+                "auto".to_string(),
+                "--executor".to_string(),
+                "process".to_string(),
+            ],
+        ] {
+            let mut argv = argv;
+            argv.extend(tail());
+            match apply_global_flags(argv) {
+                Ok(rest) => assert_eq!(rest, tail()),
+                Err(msg) => assert!(
+                    msg.contains("already initialized"),
+                    "flag pair must parse before any init contention: {msg}"
+                ),
+            }
+        }
     }
 
     /// Feature-gate failure mode through the CLI surface: `sandbox` without
-    /// the `sandbox-mock` feature must fail with the exact gate message and
+    /// any sandbox backend feature must fail with the exact gate message and
     /// never reach dispatch (so no command, spawn, or ledger write happens).
+    /// In a build WITH backends the same input parses and dispatch receives
+    /// the remaining arguments untouched (or reports set-once contention).
     #[test]
-    fn apply_executor_flag_sandbox_requires_feature() {
-        match apply_executor_flag(vec![
+    fn apply_global_flags_sandbox_gate_and_passthrough() {
+        match apply_global_flags(vec![
             "--executor".to_string(),
             "sandbox".to_string(),
             "init".to_string(),
         ]) {
             Err(msg) => {
-                assert_eq!(msg, "sandbox executor requires feature sandbox-mock");
+                #[cfg(not(any(
+                    feature = "sandbox-mock",
+                    feature = "sandbox-container",
+                    feature = "sandbox-gvisor"
+                )))]
+                {
+                    assert_eq!(msg, "sandbox executor requires feature sandbox-mock");
+                }
+                #[cfg(any(
+                    feature = "sandbox-mock",
+                    feature = "sandbox-container",
+                    feature = "sandbox-gvisor"
+                ))]
+                {
+                    assert!(
+                        msg.contains("already initialized"),
+                        "feature-on build must pass validation: {msg}"
+                    );
+                }
             }
             Ok(rest) => {
-                // Feature-on build (T10): validation passed, so dispatch must
-                // receive the remaining arguments untouched.
-                assert_eq!(rest, vec!["init".to_string()]);
+                let _ = &rest;
+                #[cfg(any(
+                    feature = "sandbox-mock",
+                    feature = "sandbox-container",
+                    feature = "sandbox-gvisor"
+                ))]
+                assert_eq!(&rest, &vec!["init".to_string()]);
+                #[cfg(not(any(
+                    feature = "sandbox-mock",
+                    feature = "sandbox-container",
+                    feature = "sandbox-gvisor"
+                )))]
+                panic!("feature-off build must reject sandbox selection");
             }
         }
     }
@@ -1497,13 +1664,13 @@ mod tests {
     /// The flag is a global FIRST-argument option only; after a subcommand it
     /// falls through to that subcommand's own unknown-flag rejection.
     #[test]
-    fn apply_executor_flag_after_subcommand_is_not_global() {
+    fn apply_global_flags_after_subcommand_is_not_global() {
         let args = vec![
             "gate".to_string(),
             "--executor".to_string(),
             "sandbox".to_string(),
         ];
-        let rest = apply_executor_flag(args.clone()).expect("passthrough");
+        let rest = apply_global_flags(args.clone()).expect("passthrough");
         assert_eq!(rest, args);
     }
 
@@ -1514,8 +1681,8 @@ mod tests {
     /// kind parse succeeded (validation precedes init), so it is accepted as
     /// set-once contention from a sibling test, never as a boundary failure.
     #[test]
-    fn apply_executor_flag_boundary_exactly_two_args_parses_to_empty_rest() {
-        match apply_executor_flag(vec!["--executor".to_string(), "process".to_string()]) {
+    fn apply_global_flags_boundary_exactly_two_args_parses_to_empty_rest() {
+        match apply_global_flags(vec!["--executor".to_string(), "process".to_string()]) {
             Ok(rest) => assert!(
                 rest.is_empty(),
                 "flag plus value with no trailing command consumes both args, got {rest:?}"
@@ -1530,12 +1697,12 @@ mod tests {
     /// dispatch payload and passes through byte-identical; an absent flag is
     /// legacy passthrough. All four rows must agree on what reaches dispatch.
     #[test]
-    fn apply_executor_flag_position_table_first_only_is_honored() {
+    fn apply_global_flags_position_table_first_only_is_honored() {
         let tail = || vec!["ledger".to_string(), "tail".to_string()];
 
         let mut first = vec!["--executor".to_string(), "process".to_string()];
         first.extend(tail());
-        let rest = match apply_executor_flag(first) {
+        let rest = match apply_global_flags(first) {
             Ok(rest) => rest,
             Err(msg) if msg.contains("already initialized") => tail(),
             Err(msg) => panic!("first-position flag must parse, got: {msg}"),
@@ -1546,19 +1713,19 @@ mod tests {
         middle.insert(1, "--executor".to_string());
         middle.insert(2, "process".to_string());
         let passthrough_mid = middle.clone();
-        let rest = apply_executor_flag(middle).expect("middle position is not global");
+        let rest = apply_global_flags(middle).expect("middle position is not global");
         assert_eq!(rest, passthrough_mid);
 
         let mut last = tail();
         last.push("--executor".to_string());
         last.push("process".to_string());
         let passthrough_last = last.clone();
-        let rest = apply_executor_flag(last).expect("last position is not global");
+        let rest = apply_global_flags(last).expect("last position is not global");
         assert_eq!(rest, passthrough_last);
 
         let absent = tail();
         let passthrough_absent = absent.clone();
-        let rest = apply_executor_flag(absent).expect("absent flag is legacy passthrough");
+        let rest = apply_global_flags(absent).expect("absent flag is legacy passthrough");
         assert_eq!(rest, passthrough_absent);
     }
 }
