@@ -1,0 +1,10 @@
+{
+  "bundle_sha256": "c5774ccc60f510aa90b8d3198d37175cff8a3017bb52897667541d25d2824bae",
+  "passed": true,
+  "tail_hash": "a4c51652d14791466193a99abfcfc14ce732e8e3fb5c880c00ee0bfa79f1e5e5",
+  "task_id": "v040-hardening",
+  "tool_versions": {
+    "cargo": "1.95.0",
+    "rustc": "1.95.0"
+  }
+}
