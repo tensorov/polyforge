@@ -269,11 +269,16 @@ mod default_build_legacy {
 
     /// An explicit tier in a build without that backend fails closed. With
     /// NO sandbox feature at all the kind-level gate fires first (legacy
-    /// message); with some other backend compiled in, the error names the
-    /// missing container feature.
+    /// message); with some other backend compiled in — mock, gVisor, or
+    /// firecracker — the kind gate passes and the error names the missing
+    /// container feature instead.
     #[test]
     fn explicit_tier_without_compiled_backend_names_gate() {
-        let expected = if cfg!(any(feature = "sandbox-mock", feature = "sandbox-gvisor")) {
+        let expected = if cfg!(any(
+            feature = "sandbox-mock",
+            feature = "sandbox-gvisor",
+            feature = "sandbox-firecracker"
+        )) {
             "requires feature sandbox-container"
         } else {
             "sandbox executor requires feature sandbox-mock"

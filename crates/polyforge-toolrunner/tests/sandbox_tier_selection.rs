@@ -21,7 +21,7 @@
 
 use polyforge_toolrunner::prober::{select_tier, ProdProbe};
 use polyforge_toolrunner::{
-    init_executor, init_executor_with_backend, selected_sandbox_tier, ExecutorKind, SandboxTier,
+    init_executor_with_backend, selected_sandbox_tier, ExecutorKind, SandboxTier,
 };
 
 #[test]

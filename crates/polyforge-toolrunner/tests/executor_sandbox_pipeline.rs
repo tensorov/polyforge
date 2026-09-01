@@ -23,6 +23,8 @@ use std::path::PathBuf;
 
 use polyforge_core::evidence::{EvidenceEntry, EvidenceKind, EvidenceState};
 use polyforge_core::ledger::Ledger;
+#[cfg(feature = "sandbox-container")]
+use polyforge_toolrunner::RunnerError;
 use polyforge_toolrunner::{
     executor_digest, init_executor, lookup, run, verify_and_append, ExecutorKind, MOCK_IMAGE_ID,
 };
@@ -47,6 +49,16 @@ fn own_workdirs() -> Vec<PathBuf> {
     found
 }
 
+/// The configured sandbox image ref, mirroring the container backend's own
+/// resolution (`POLYFORGE_SANDBOX_IMAGE` or the documented default).
+#[cfg(feature = "sandbox-container")]
+fn configured_image_ref() -> String {
+    match std::env::var(polyforge_toolrunner::POLYFORGE_SANDBOX_IMAGE_ENV) {
+        Ok(img) if !img.trim().is_empty() => img.trim().to_string(),
+        _ => polyforge_toolrunner::DEFAULT_SANDBOX_IMAGE.to_string(),
+    }
+}
+
 #[test]
 fn sandbox_selection_is_idempotent() {
     init_executor(ExecutorKind::Sandbox).expect("first sandbox selection");
@@ -61,6 +73,40 @@ fn sandbox_pipeline_runs_end_to_end_through_public_api() {
     assert_eq!(MOCK_IMAGE_ID, "mock-sandbox-image-v1");
 
     let tool = lookup("cargo --version").expect("tool on allowlist");
+
+    // A legacy Sandbox selection routes to the REAL container backend when
+    // that feature is compiled in and the host probes a Container tier
+    // (same check the runner's container_backend_active caches); the
+    // mock-specific pins below apply only to the mock path.
+    #[cfg(feature = "sandbox-container")]
+    {
+        use polyforge_toolrunner::prober::{select_tier, ProdProbe};
+        if matches!(
+            select_tier(None, &ProdProbe),
+            Ok(polyforge_toolrunner::SandboxTier::Container)
+        ) {
+            let image_ref = configured_image_ref();
+            match run(&tool, &[]) {
+                Ok(_) => {
+                    println!(
+                        "[SKIP] reason: container backend active with a resolvable image; \
+                         container-path pins live in sandbox_tier_container_e2e.rs"
+                    );
+                    return;
+                }
+                Err(RunnerError::Spawn(msg)) => {
+                    assert!(
+                        msg.contains(&image_ref) && msg.contains("digest"),
+                        "fail-closed run must name the unresolvable image and the digest \
+                         requirement, got: {msg}"
+                    );
+                    return;
+                }
+                Err(e) => panic!("unexpected error from the container backend: {e:?}"),
+            }
+        }
+    }
+
     let out = run(&tool, &[]).expect("public run must dispatch to the selected backend");
 
     assert_eq!(out.exit_code, 0);

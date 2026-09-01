@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 
 use polyforge_core::evidence::{EvidenceEntry, EvidenceKind, EvidenceState};
 use polyforge_core::ledger::Ledger;
-use polyforge_toolrunner::prober::{select_tier, ProbeSource, ProdProbe};
+use polyforge_toolrunner::prober::{ProbeSource, ProdProbe};
 use polyforge_toolrunner::{
     init_executor_with_backend, lookup, verify_and_append, ExecutorKind, SandboxTier,
 };

@@ -1692,6 +1692,23 @@ mod tests {
         }
     }
 
+    /// T3 boundary kill (V-E item 17), len==1 side: a trailing `--executor`
+    /// with NO value must be a usage error naming the flag, never an index
+    /// panic or a silent parse. Kills the `<` -> `==` / `>` mutants of the
+    /// length guard, which would fall through to reading the absent value.
+    #[test]
+    fn apply_global_flags_boundary_lone_flag_is_usage_error() {
+        let err = apply_global_flags(vec!["--executor".to_string()]).unwrap_err();
+        assert_eq!(err, EXECUTOR_USAGE);
+        let err = apply_global_flags(vec![
+            "--executor".to_string(),
+            "process".to_string(),
+            "--sandbox-backend".to_string(),
+        ])
+        .unwrap_err();
+        assert_eq!(err, SANDBOX_BACKEND_USAGE);
+    }
+
     /// T3 arg-position table: only the FIRST argument position selects the
     /// executor; the same flag pair in middle or last position is ordinary
     /// dispatch payload and passes through byte-identical; an absent flag is

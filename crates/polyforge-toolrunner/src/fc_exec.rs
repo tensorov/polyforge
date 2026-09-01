@@ -398,9 +398,7 @@ impl Executor for FcExecutor {
             _ => format!("unknown-{bin}"),
         };
 
-        let mut parts = canonical.args.clone();
-        parts.extend(args.iter().cloned());
-        let cmd = parts.join(" ");
+        let cmd = command_string(&canonical, args);
         let (exit_code, stdout) = self.sandboxed_exec(&cmd)?;
         let stdout_hash = sha256_hex(stdout.as_bytes());
 
@@ -729,6 +727,42 @@ fn connect_vsock_with_retry(
     }
 }
 
+/// Connect AND handshake with retry, bounded by the boot deadline.
+///
+/// FC v1.9.1 accepts the host-side UDS CONNECT and answers `OK <cid>` as
+/// soon as the vsock device is up, BEFORE the guest agent (PID 1, boots in
+/// ~0.5-4s) starts listening on the AF_VSOCK port. When the guest-side
+/// connect fails, FC closes the UDS stream and the handshake read dies with
+/// `guest closed the vsock stream before a full line arrived`. The proven
+/// T8 spike survived this by retrying the whole connect+handshake; this
+/// loop restores that behavior: on an Io error from the handshake, drop
+/// the client, sleep [`VSOCK_RETRY_MS`], reconnect, and re-handshake until
+/// the boot window closes. Non-Io failures (CONNECT rejected, timeout)
+/// surface immediately.
+fn connect_and_handshake_with_retry(
+    sock: &Path,
+    boot_deadline: Instant,
+    deadline: Instant,
+    budget_secs: u64,
+) -> Result<VsockClient, RunnerError> {
+    loop {
+        let mut client = connect_vsock_with_retry(sock, boot_deadline, budget_secs)?;
+        match vsock_handshake(&mut client.stream, deadline, budget_secs) {
+            Ok(()) => return Ok(client),
+            Err(RunnerError::Io(_)) => {
+                if Instant::now() >= boot_deadline {
+                    return Err(RunnerError::TimedOut {
+                        timeout_secs: budget_secs,
+                    });
+                }
+                drop(client);
+                thread::sleep(Duration::from_millis(VSOCK_RETRY_MS));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Read one newline-terminated line with a hard size cap.
 fn read_line_capped(
     stream: &mut UnixStream,
@@ -993,9 +1027,12 @@ impl VmSession {
                 deadline,
                 Instant::now() + Duration::from_secs(DEFAULT_BOOT_TIMEOUT_SECS),
             );
-            let mut client =
-                connect_vsock_with_retry(&paths.vsock_host, boot_deadline, budget_secs)?;
-            vsock_handshake(&mut client.stream, deadline, budget_secs)?;
+            let client = connect_and_handshake_with_retry(
+                &paths.vsock_host,
+                boot_deadline,
+                deadline,
+                budget_secs,
+            )?;
             session.client = Some(client);
             Ok(())
         })();
@@ -1382,6 +1419,95 @@ mod tests {
         assert_eq!(exec.label(), "sandbox-firecracker");
     }
 
+    // ---- connect+handshake retry loop ------------------------------------------
+
+    /// A server that accepts every connection and closes it without a
+    /// reply line reproduces the pre-agent boot race: FC accepts the UDS
+    /// CONNECT, the guest-side connect fails, FC closes the stream, and the
+    /// handshake read dies with Io("guest closed ... before a full line").
+    fn closing_server(sock: &Path) -> PathBuf {
+        let listener = std::os::unix::net::UnixListener::bind(sock).expect("bind");
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                drop(stream);
+            }
+        });
+        sock.to_path_buf()
+    }
+
+    #[test]
+    fn handshake_retry_loop_honors_boot_deadline() {
+        let sock = std::env::temp_dir().join(format!(
+            "pf-fc-retry-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _listener = closing_server(&sock);
+        let start = Instant::now();
+        let boot_deadline = start + Duration::from_millis(1500);
+        let err = connect_and_handshake_with_retry(
+            &sock,
+            boot_deadline,
+            start + Duration::from_secs(90),
+            90,
+        )
+        .err()
+        .and_then(|e| match e {
+            RunnerError::TimedOut { timeout_secs: 90 } => None,
+            other => Some(other),
+        });
+        assert!(
+            err.is_none(),
+            "deadline exhaustion must surface as TimedOut(90), got: {err:?}"
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(1400),
+            "loop must retry until the boot deadline, gave up after {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "loop must not retry past the deadline, ran {elapsed:?}"
+        );
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    #[test]
+    fn handshake_retry_loop_recovers_after_transient_close() {
+        let sock = std::env::temp_dir().join(format!(
+            "pf-fc-retry-ok-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+        thread::spawn(move || {
+            let (first, _) = listener.accept().expect("first accept");
+            drop(first);
+            let (second, _) = listener.accept().expect("second accept");
+            let mut second = second;
+            let mut line = Vec::new();
+            let mut byte = [0u8; 1];
+            use std::io::Read;
+            while second.read(&mut byte).is_ok() && byte[0] != b'\n' {
+                line.push(byte[0]);
+            }
+            second.write_all(b"OK 5001\n").expect("handshake reply");
+        });
+        let start = Instant::now();
+        let client = connect_and_handshake_with_retry(
+            &sock,
+            start + Duration::from_secs(10),
+            start + Duration::from_secs(90),
+            90,
+        )
+        .expect("retry loop must absorb the first closed connection");
+        assert!(
+            client.stream.peer_addr().is_ok(),
+            "recovered client holds a live stream"
+        );
+        let _ = std::fs::remove_file(&sock);
+    }
+
     // ---- spawn command shapes --------------------------------------------------
 
     #[test]
@@ -1469,13 +1595,21 @@ mod tests {
             }
         };
         let exec = FcExecutor::new(config);
+        // The allowlist gate is host-side and must still pass (that is the
+        // attestation contract); the provisioned rootfs is busybox-only, so
+        // the guest reports 127 for the missing binary. This test proves the
+        // VM/vsock/agent round-trip, not tool presence inside the image.
         let t = lookup("cargo --version").expect("allowlisted");
         match exec.run(&t, &[]) {
             Ok(out) => {
-                assert_eq!(out.exit_code, 0, "guest echo round-trip must succeed");
+                assert_eq!(
+                    out.exit_code, 127,
+                    "busybox sh reports 127 for a missing binary"
+                );
+                let stdout = String::from_utf8_lossy(&out.stdout);
                 assert!(
-                    String::from_utf8_lossy(&out.stdout).contains("cargo"),
-                    "stdout must come from inside the microVM"
+                    stdout.contains("not found"),
+                    "busybox sh must report the missing applet, got: {stdout:?}"
                 );
                 assert_eq!(out.stdout_hash.len(), 64);
                 eprintln!(
