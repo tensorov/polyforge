@@ -1709,6 +1709,41 @@ mod tests {
         assert_eq!(err, SANDBOX_BACKEND_USAGE);
     }
 
+    /// T3 boundary kill (V-E item 17), len==2 side: a LEADING flag+value
+    /// pair with nothing after must PROCEED past the length guard and fail
+    /// (or succeed) at the LATER validation stages, never at the guard. The
+    /// `<` -> `<=` mutant turns each of these into the bare usage constant,
+    /// which distinguishes it from the real downstream messages pinned here.
+    #[test]
+    fn apply_global_flags_boundary_leading_pair_passes_guard() {
+        // `--sandbox-backend container` alone: the guard passes, the value
+        // parses, and the pair-combination check rejects it with its own
+        // message (not SANDBOX_BACKEND_USAGE).
+        let err = apply_global_flags(vec![
+            "--sandbox-backend".to_string(),
+            "container".to_string(),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            err,
+            format!("{SANDBOX_BACKEND_USAGE}; --sandbox-backend requires --executor sandbox")
+        );
+
+        // `--executor process` alone: the guard passes, the value parses,
+        // the selection applies, and dispatch receives an EMPTY remainder.
+        // An `already initialized` rejection proves the guard and value
+        // parse succeeded (validation precedes init), so it is accepted as
+        // set-once contention from a sibling test, never a guard failure.
+        match apply_global_flags(vec!["--executor".to_string(), "process".to_string()]) {
+            Ok(rest) => assert!(
+                rest.is_empty(),
+                "leading pair with no command consumes both args, got {rest:?}"
+            ),
+            Err(msg) if msg.contains("already initialized") => {}
+            Err(msg) => panic!("leading --executor pair must pass the guard, got: {msg}"),
+        }
+    }
+
     /// T3 arg-position table: only the FIRST argument position selects the
     /// executor; the same flag pair in middle or last position is ordinary
     /// dispatch payload and passes through byte-identical; an absent flag is

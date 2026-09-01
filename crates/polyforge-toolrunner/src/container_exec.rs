@@ -840,4 +840,107 @@ mod tests {
             "sandbox-container"
         );
     }
+
+    // ---- from_environment env parsing (empty/whitespace guards) ---------------
+
+    /// Run `f` with POLYFORGE_SANDBOX_RUNTIME / POLYFORGE_SANDBOX_IMAGE set
+    /// to `runtime` / `image`, restoring both afterwards (tui app.rs
+    /// save-set-assert-restore pattern). No other test in this binary reads
+    /// these vars, so the mutation is race-free in practice.
+    fn with_env(runtime: Option<&str>, image: Option<&str>, f: impl FnOnce()) {
+        let saved_rt = std::env::var(POLYFORGE_SANDBOX_RUNTIME_ENV).ok();
+        let saved_img = std::env::var(POLYFORGE_SANDBOX_IMAGE_ENV).ok();
+        match runtime {
+            Some(v) => std::env::set_var(POLYFORGE_SANDBOX_RUNTIME_ENV, v),
+            None => std::env::remove_var(POLYFORGE_SANDBOX_RUNTIME_ENV),
+        }
+        match image {
+            Some(v) => std::env::set_var(POLYFORGE_SANDBOX_IMAGE_ENV, v),
+            None => std::env::remove_var(POLYFORGE_SANDBOX_IMAGE_ENV),
+        }
+        f();
+        match saved_rt {
+            Some(v) => std::env::set_var(POLYFORGE_SANDBOX_RUNTIME_ENV, v),
+            None => std::env::remove_var(POLYFORGE_SANDBOX_RUNTIME_ENV),
+        }
+        match saved_img {
+            Some(v) => std::env::set_var(POLYFORGE_SANDBOX_IMAGE_ENV, v),
+            None => std::env::remove_var(POLYFORGE_SANDBOX_IMAGE_ENV),
+        }
+    }
+
+    /// Empty or whitespace-only env values fall back exactly like unset
+    /// ones: the runtime to the probed docker/podman (or the hard error on
+    /// a runtime-less host), the image to the documented default. The
+    /// `!x.trim().is_empty()` guards must treat "" and "   " as absent.
+    #[test]
+    fn from_environment_treats_blank_runtime_and_image_as_unset() {
+        for blank in ["", "   "] {
+            // Blank runtime + explicit image: the image env is honored
+            // verbatim (trimmed), proving the runtime guard alone fell back.
+            with_env(Some(blank), Some("my-image:v2"), || {
+                let exec = ContainerExecutor::from_environment().expect("probed runtime");
+                assert_eq!(exec.image_ref(), "my-image:v2");
+                assert!(
+                    exec.runtime() == "docker" || exec.runtime() == "podman",
+                    "blank runtime must fall back to the probed runtime, got {}",
+                    exec.runtime()
+                );
+            });
+
+            // Blank image + explicit runtime: the runtime env is honored
+            // verbatim (trimmed), proving the image guard alone fell back.
+            with_env(Some("my-runtime"), Some(blank), || {
+                let exec = ContainerExecutor::from_environment().expect("explicit runtime");
+                assert_eq!(exec.runtime(), "my-runtime");
+                assert_eq!(
+                    exec.image_ref(),
+                    DEFAULT_SANDBOX_IMAGE,
+                    "blank image must fall back to the documented default"
+                );
+            });
+
+            // Both blank: both fall back (probed runtime + default image).
+            with_env(Some(blank), Some(blank), || {
+                let exec = ContainerExecutor::from_environment().expect("probed runtime");
+                assert_eq!(exec.image_ref(), DEFAULT_SANDBOX_IMAGE);
+                assert!(
+                    exec.runtime() == "docker" || exec.runtime() == "podman",
+                    "blank runtime must fall back to the probed runtime, got {}",
+                    exec.runtime()
+                );
+            });
+        }
+
+        // Non-blank values are TRIMMED, not rejected: surrounding whitespace
+        // is not part of the value.
+        with_env(Some("  docker  "), Some("  img:1  "), || {
+            let exec = ContainerExecutor::from_environment().expect("trimmed values");
+            assert_eq!(exec.runtime(), "docker");
+            assert_eq!(exec.image_ref(), "img:1");
+        });
+    }
+
+    /// On a host with no container runtime, a blank runtime value surfaces
+    /// the actionable hard error (not a blank runtime name).
+    #[test]
+    fn from_environment_blank_runtime_without_probe_is_hard_error() {
+        // Only meaningful when the probe finds nothing; with docker/podman
+        // present the fallback succeeds, so assert the error shape only on
+        // runtime-less hosts.
+        if ProdProbe.container_runtime().is_some() {
+            println!("[SKIP] reason: container runtime present; hard-error arm unreachable");
+            return;
+        }
+        with_env(Some(""), Some("img"), || {
+            let err = match ContainerExecutor::from_environment() {
+                Ok(_) => panic!("no runtime and blank override must fail"),
+                Err(e) => e,
+            };
+            assert!(
+                matches!(&err, RunnerError::Spawn(m) if m.contains("no container runtime available")),
+                "error must name the fix: {err:?}"
+            );
+        });
+    }
 }
