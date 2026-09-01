@@ -7,13 +7,21 @@
 #   manifest.json  build-inputs manifest consumed by FcExecutor via
 #                  POLYFORGE_FC_MANIFEST:
 #                    {"base_image_or_packages": "...",
-#                     "build_script_sha256": "<sha256 of THIS script>"}
+#                     "build_script_sha256": "<sha256 of THIS script>",
+#                     "rootfs_sha256": "<sha256 of rootfs.ext4>"}
+#                  rootfs_sha256 BINDS the image bytes to the manifest:
+#                  FcConfig::new verifies the ext4 against it fail-closed
+#                  before any VM boot, so a swapped rootfs with an untouched
+#                  manifest is rejected.
 #
 # WHY INPUTS AND NOT IMAGE BYTES: mkfs.ext4 output embeds UUIDs, superblock
 # timestamps, and alignment padding that differ between rebuilds even from
 # identical inputs. PolyForge hashes the DECLARED INPUTS (this script's own
 # sha256 plus the base package identity) so one logical image keeps one
-# stable executor digest across rebuilds.
+# stable executor digest across rebuilds. The rootfs_sha256 key is a
+# VERIFICATION binding, not a digest input: rebuilds change it (and the
+# operator re-runs this script to refresh the manifest), but the executor
+# digest stays stable for identical declared inputs.
 #
 # Host requirements: gcc (static), e2fsprogs (mkfs.ext4 -d), curl, sha256sum.
 # The guest agent source below is kept in sync with the PROVEN T8 spike
@@ -212,14 +220,16 @@ mkfs.ext4 -F -q -d "$WORK/rootfs-dir" "$ROOTFS" "${ROOTFS_SIZE_MB}M" \
 
 BASE_DESC="busybox 1.35.0 x86_64-linux-musl static + gcc-static vsock guest agent (spike-synced)"
 SCRIPT_SHA="$(sha256sum "$0" | cut -d' ' -f1)"
+ROOTFS_SHA256="$(sha256sum "$ROOTFS" | cut -d' ' -f1)"
 
 cat > "$OUT_DIR/manifest.json" <<MANIFEST_EOF
 {
   "base_image_or_packages": "$BASE_DESC",
-  "build_script_sha256": "$SCRIPT_SHA"
+  "build_script_sha256": "$SCRIPT_SHA",
+  "rootfs_sha256": "$ROOTFS_SHA256"
 }
 MANIFEST_EOF
 
 log "wrote $ROOTFS ($(stat -c%s "$ROOTFS") bytes)"
-log "wrote $OUT_DIR/manifest.json (build_script_sha256=$SCRIPT_SHA)"
+log "wrote $OUT_DIR/manifest.json (build_script_sha256=$SCRIPT_SHA rootfs_sha256=$ROOTFS_SHA256)"
 log "pin the kernel separately from FC CI S3; see README-host-prereqs.md"

@@ -528,6 +528,17 @@ impl GvisorExecutor {
     }
 }
 
+/// Full guest argv for one allowlisted run: the canonical BINARY first,
+/// then its fixed args, then the caller's typed args. Omitting the binary
+/// makes a zero-fixed-args tool execute the image default CMD instead of
+/// the allowlisted command — a vacuous attestation.
+pub(crate) fn primary_argv(canonical: &Tool, args: &[String]) -> Vec<String> {
+    let mut argv = vec![canonical.bin.display().to_string()];
+    argv.extend(canonical.args.iter().cloned());
+    argv.extend(args.iter().cloned());
+    argv
+}
+
 impl Executor for GvisorExecutor {
     fn run(&self, tool: &Tool, args: &[String]) -> Result<RunOutput, RunnerError> {
         // Same gate order as every backend: allowlist, then typed args,
@@ -548,9 +559,7 @@ impl Executor for GvisorExecutor {
             _ => format!("unknown-{bin}"),
         };
 
-        let mut argv = canonical.args.clone();
-        argv.extend(args.iter().cloned());
-        let out = self.sandboxed_output(route, &argv)?;
+        let out = self.sandboxed_output(route, &primary_argv(&canonical, args))?;
         let stdout_hash = sha256_hex(&out.stdout);
 
         Ok(RunOutput {
@@ -697,6 +706,43 @@ mod tests {
         cfg.runtime_name = "my-runsc".to_string();
         let args = primary_run_args(&cfg, &[]).expect("args built");
         assert!(args.contains(&"--runtime=my-runsc".to_string()));
+    }
+
+    // ---- primary_argv: the binary MUST lead the guest argv -------------------
+
+    #[test]
+    fn primary_argv_prepends_binary_for_zero_fixed_args_tool() {
+        // "pytest" has no fixed args: without the prepend the container
+        // would execute the image default CMD instead of pytest.
+        let t = lookup("pytest").expect("allowlisted");
+        let argv = primary_argv(&t, &[]);
+        assert_eq!(argv, vec!["pytest".to_string()]);
+    }
+
+    #[test]
+    fn primary_argv_prepends_binary_for_fixed_args_tool() {
+        let t = lookup("cargo --version").expect("allowlisted");
+        let argv = primary_argv(&t, &[]);
+        assert_eq!(
+            argv,
+            vec!["cargo".to_string(), "--version".to_string()],
+            "binary first, then fixed args"
+        );
+    }
+
+    #[test]
+    fn primary_argv_appends_user_args_after_fixed_args() {
+        let t = lookup("cargo build").expect("allowlisted");
+        let argv = primary_argv(&t, &["--offline".to_string()]);
+        assert_eq!(
+            argv,
+            vec![
+                "cargo".to_string(),
+                "build".to_string(),
+                "--offline".to_string()
+            ],
+            "binary, fixed args, then typed user args"
+        );
     }
 
     #[test]

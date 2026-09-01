@@ -79,10 +79,20 @@ rebuilds even from identical inputs, so hashing image bytes would break
 cross-build comparability. Same inputs therefore yield one stable `fc:`
 digest across rebuilds.
 
+The manifest additionally carries `rootfs_sha256` — the SHA-256 of the
+built `rootfs.ext4` bytes. This is a fail-closed VERIFICATION binding, not
+a digest input: `FcConfig::new` hashes the ext4 on disk and compares it to
+the manifest value BEFORE any VM boot. A swapped or tampered rootfs with
+an untouched manifest is rejected with an error naming the file, both
+hashes, and this README. Consequence for operators: the image and
+`manifest.json` must always come from the SAME `rootfs-build.sh` run —
+re-running the script refreshes both together, so never mix a new image
+with an old manifest or vice versa.
+
 ```sh
 ./rootfs-build.sh /opt/polyforge-fc
 # -> /opt/polyforge-fc/rootfs.ext4
-# -> /opt/polyforge-fc/manifest.json
+# -> /opt/polyforge-fc/manifest.json   (includes rootfs_sha256)
 ```
 
 Host tools needed by the builder: `gcc` (static link), `e2fsprogs`

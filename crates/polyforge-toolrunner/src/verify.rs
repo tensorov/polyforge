@@ -28,6 +28,27 @@ use crate::runner::{executor, sha256_hex, RunnerError, Tool};
 /// Maximum number of stderr bytes recorded in the ledger for a failed run.
 const STDERR_LEDGER_LIMIT: usize = 2048;
 
+/// Executor-identity guard for the attestation append: a run under an
+/// EXPLICITLY selected sandbox tier must carry its tier-prefixed
+/// `executor_digest`. When the tier is set but the digest computation
+/// failed (`None`), appending a `Verified` entry without the key would
+/// produce a tier-set attestation with no executor identity — fail the
+/// run instead. The legacy path (tier `None`, digest may be `None`, key
+/// absent) passes through untouched.
+fn require_tier_digest(
+    tier: Option<crate::prober::SandboxTier>,
+    digest: Option<String>,
+) -> Result<Option<String>, RunnerError> {
+    match (tier, digest) {
+        (Some(tier), None) => Err(RunnerError::Spawn(format!(
+            "sandbox tier {} selected but its executor digest is unavailable; refusing to \
+             append a Verified entry without executor identity",
+            tier.label()
+        ))),
+        (_, digest) => Ok(digest),
+    }
+}
+
 /// Cap a string at `limit` bytes, never splitting a UTF-8 codepoint.
 fn truncate(s: &str, limit: usize) -> String {
     if s.len() <= limit {
@@ -169,13 +190,19 @@ pub fn verify_and_append(
     }
     // Record-only executor identity: only a non-process backend contributes
     // the metadata key, so process runs keep legacy payloads byte-identical.
+    // A tier-set run whose digest computation failed never reaches the
+    // append (see require_tier_digest).
+    let digest = require_tier_digest(
+        crate::runner::selected_sandbox_tier(),
+        crate::runner::active_executor_digest(),
+    )?;
     let mut attestation = output.to_attestation(
         claim.task_id.clone(),
         claim.commit_sha.clone(),
         claim.diff_hash.clone(),
         now_ts(),
     );
-    if let Some(digest) = crate::runner::active_executor_digest() {
+    if let Some(digest) = digest {
         attestation.eval_metadata = Some(serde_json::json!({ "executor_digest": digest }));
     }
     let mut verified =
@@ -716,6 +743,44 @@ mod tests {
         assert_eq!(restored.kind, EvidenceKind::Validation);
         assert_eq!(restored.state, EvidenceState::Validated);
         assert_eq!(restored.validator, "oracle");
+    }
+
+    // ---- require_tier_digest guard ------------------------------------------
+
+    use crate::prober::SandboxTier;
+
+    #[test]
+    fn test_tier_set_with_missing_digest_fails_closed() {
+        let err = require_tier_digest(Some(SandboxTier::Firecracker), None).unwrap_err();
+        let msg = match err {
+            RunnerError::Spawn(m) => m,
+            other => panic!("expected Spawn, got {other:?}"),
+        };
+        assert!(
+            msg.contains("fc") && msg.contains("executor digest is unavailable"),
+            "error names the tier label and the missing identity: {msg}"
+        );
+        let err = require_tier_digest(Some(SandboxTier::Container), None).unwrap_err();
+        assert!(
+            matches!(err, RunnerError::Spawn(ref m) if m.contains("container")),
+            "every tier arm fails closed: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_tier_set_with_present_digest_passes_through() {
+        let digest = require_tier_digest(Some(SandboxTier::Gvisor), Some("abc".to_string()))
+            .expect("tier with a digest is the normal tier-set path");
+        assert_eq!(digest.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn test_legacy_path_without_tier_stays_untouched() {
+        assert_eq!(require_tier_digest(None, None).unwrap(), None);
+        assert_eq!(
+            require_tier_digest(None, Some("d".to_string())).unwrap(),
+            Some("d".to_string())
+        );
     }
 
     // T3: git-state introspection. Create a throwaway git repo with one

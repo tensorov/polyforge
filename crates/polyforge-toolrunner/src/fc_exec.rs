@@ -36,6 +36,12 @@
 //! diverges from the other tiers; the `fc:` metadata prefix recorded at
 //! dispatch disambiguates them.
 //!
+//! The manifest's `rootfs_sha256` key sits OUTSIDE the digest on purpose:
+//! it is a fail-closed VERIFICATION binding (the ext4 on disk must hash to
+//! it, checked by [`FcConfig::new`] before any VM boot) so a swapped rootfs
+//! cannot ride an untouched manifest, while rebuilds from identical
+//! declared inputs keep the same executor digest.
+//!
 //! # Configuration (process environment)
 //!
 //! * `POLYFORGE_FC_KERNEL`: absolute path to the pinned vmlinux image.
@@ -43,7 +49,7 @@
 //!   tool binaries plus the static vsock guest agent as `/init`.
 //! * `POLYFORGE_FC_MANIFEST`: path to the rootfs build-inputs manifest JSON
 //!   written by deploy/firecracker/rootfs-build.sh (keys:
-//!   `base_image_or_packages`, `build_script_sha256`).
+//!   `base_image_or_packages`, `build_script_sha256`, `rootfs_sha256`).
 //! * `POLYFORGE_FC_WORK_DIR`: directory for per-run sockets and logs
 //!   (default `<temp>/pf-fc`). Must be writable.
 //! * `POLYFORGE_FC_GUEST_CID`: vsock context id (default 3; 0 to 2 are
@@ -139,16 +145,21 @@ pub const POLYFORGE_FC_GUEST_CID_ENV: &str = "POLYFORGE_FC_GUEST_CID";
 /// Populated from the manifest JSON emitted by
 /// deploy/firecracker/rootfs-build.sh so that rebuilding the image from the
 /// same inputs keeps one stable digest even though raw ext4 bytes drift.
+/// `rootfs_sha256` is NOT a digest input: it binds the built image bytes to
+/// the manifest, verified fail-closed by [`FcConfig::new`] before any VM
+/// boot so a swapped rootfs cannot ride an untouched manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootfsBuildInputs {
     /// Base image or exact package list the rootfs was populated from.
     pub base_image_or_packages: String,
     /// SHA-256 of the build script that produced the image.
     pub build_script_sha256: String,
+    /// SHA-256 of the built rootfs.ext4 bytes (verification binding).
+    pub rootfs_sha256: String,
 }
 
 impl RootfsBuildInputs {
-    /// Parse the manifest JSON written by rootfs-build.sh. Both keys must be
+    /// Parse the manifest JSON written by rootfs-build.sh. All keys must be
     /// present and non-empty; anything else fails closed naming the key.
     pub fn from_manifest_path(path: &Path) -> Result<Self, RunnerError> {
         let raw = std::fs::read_to_string(path).map_err(|e| RunnerError::Io(e.to_string()))?;
@@ -170,6 +181,7 @@ impl RootfsBuildInputs {
         Ok(Self {
             base_image_or_packages: required("base_image_or_packages")?,
             build_script_sha256: required("build_script_sha256")?,
+            rootfs_sha256: required("rootfs_sha256")?,
         })
     }
 }
@@ -274,9 +286,12 @@ impl FcConfig {
             )));
         }
         let work_dir = ensure_writable_dir(&work_dir.into())?;
+        let kernel = kernel.canonicalize().map_err(io_err)?;
+        let rootfs = rootfs.canonicalize().map_err(io_err)?;
+        verify_rootfs_binding(&rootfs, &build_inputs.rootfs_sha256)?;
         Ok(Self {
-            kernel: kernel.canonicalize().map_err(io_err)?,
-            rootfs: rootfs.canonicalize().map_err(io_err)?,
+            kernel,
+            rootfs,
             work_dir,
             guest_cid,
             build_inputs,
@@ -446,6 +461,8 @@ pub fn compose_digest(
 }
 
 /// Streaming SHA-256 of a file (never loads the whole image into memory).
+/// Hex-encodes the digest DIRECTLY: routing it through [`sha256_hex`]
+/// would hash the 32 digest bytes a second time.
 fn sha256_of_file(path: &Path) -> Result<String, RunnerError> {
     let mut file = std::fs::File::open(path).map_err(io_err)?;
     let mut hasher = Sha256::new();
@@ -457,7 +474,32 @@ fn sha256_of_file(path: &Path) -> Result<String, RunnerError> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(sha256_hex(&hasher.finalize()))
+    Ok(hex_digest(&hasher.finalize()))
+}
+
+/// Lowercase hex of a finalized digest (the local twin of runner.rs's
+/// private `hex`, which is not exported).
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Fail-closed binding of the rootfs bytes to the manifest: the ext4 on disk
+/// must hash to `expected_sha256` (the manifest's `rootfs_sha256`). A swapped
+/// image with an untouched manifest is rejected here, BEFORE any VM boot.
+/// The hash is a VERIFICATION input only — it never enters the executor
+/// digest, which stays stable across rebuilds from identical declared
+/// inputs (see the module digest docs).
+fn verify_rootfs_binding(rootfs: &Path, expected_sha256: &str) -> Result<(), RunnerError> {
+    let actual = sha256_of_file(rootfs)?;
+    if actual == expected_sha256 {
+        return Ok(());
+    }
+    Err(RunnerError::Spawn(format!(
+        "firecracker rootfs {} does not match the manifest binding: expected rootfs_sha256 \
+         {expected_sha256}, image hashes to {actual}; the image and manifest.json must come \
+         from the same rootfs-build.sh run (see deploy/firecracker/README-host-prereqs.md)",
+        rootfs.display()
+    )))
 }
 
 /// First line of `firecracker --version`; best-effort `unknown-firecracker`
@@ -997,7 +1039,13 @@ impl VmSession {
                     "drive_id": "rootfs",
                     "path_on_host": config.rootfs.display().to_string(),
                     "is_root_device": true,
-                    "is_read_only": false,
+                    // Read-only: the guest only execs /init and /bin/sh and
+                    // returns output over vsock; nothing writes to the image.
+                    // This keeps the ext4 bytes (and thus the manifest's
+                    // rootfs_sha256 binding) stable across boots — a rw
+                    // device would bump the superblock mount timestamp on
+                    // every boot and break the binding on the second run.
+                    "is_read_only": true,
                     "io_engine": "Sync",
                 }),
                 deadline,
@@ -1126,11 +1174,19 @@ mod tests {
         path
     }
 
+    /// Inputs for configs expected to fail BEFORE the rootfs binding check
+    /// (missing kernel/rootfs, reserved cid, unwritable work dir), so the
+    /// binding hash value is irrelevant.
     fn build_inputs() -> RootfsBuildInputs {
+        build_inputs_for("b".repeat(64))
+    }
+
+    fn build_inputs_for(rootfs_sha256: String) -> RootfsBuildInputs {
         RootfsBuildInputs {
             base_image_or_packages: "busybox-1.35.0-x86_64-linux-musl + static vsock agent"
                 .to_string(),
             build_script_sha256: "a".repeat(64),
+            rootfs_sha256,
         }
     }
 
@@ -1142,8 +1198,17 @@ mod tests {
             std::process::id(),
             unique_suffix()
         ));
-        FcConfig::new(kernel, rootfs, work, DEFAULT_GUEST_CID, build_inputs())
-            .expect("valid test config")
+        // The binding check hashes the real temp file, so the fixture must
+        // declare that file's actual hash.
+        let rootfs_sha256 = sha256_of_file(&rootfs).expect("rootfs hashed");
+        FcConfig::new(
+            kernel,
+            rootfs,
+            work,
+            DEFAULT_GUEST_CID,
+            build_inputs_for(rootfs_sha256),
+        )
+        .expect("valid test config")
     }
 
     // ---- digest ----------------------------------------------------------
@@ -1220,17 +1285,98 @@ mod tests {
         assert!(matches!(err, RunnerError::Io(_)), "{err:?}");
     }
 
+    // ---- rootfs binding (fail-closed swap detection) --------------------------
+
+    /// sha256("hello") — independent vector proving sha256_of_file hex-
+    /// encodes the file digest itself, never a second hash of it.
+    #[test]
+    fn sha256_of_file_matches_known_vector() {
+        let path = std::env::temp_dir().join(format!(
+            "pf-fc-hash-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::write(&path, b"hello").expect("written");
+        assert_eq!(
+            sha256_of_file(&path).expect("hashed"),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Write a real temp file and return (path, its sha256) so binding tests
+    /// run against actual filesystem bytes, not synthetic paths.
+    fn temp_rootfs_with_hash(tag: &str, bytes: &[u8]) -> (PathBuf, String) {
+        let path = std::env::temp_dir().join(format!(
+            "pf-fc-bind-{tag}-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::write(&path, bytes).expect("rootfs written");
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        (path, hex_digest(&hasher.finalize()))
+    }
+
+    fn binding_inputs(rootfs_sha256: String) -> RootfsBuildInputs {
+        RootfsBuildInputs {
+            base_image_or_packages: "busybox".to_string(),
+            build_script_sha256: "a".repeat(64),
+            rootfs_sha256,
+        }
+    }
+
+    #[test]
+    fn config_accepts_rootfs_matching_manifest_binding() {
+        let kernel = temp_asset("bind-ok-kernel");
+        let (rootfs, hash) = temp_rootfs_with_hash("ok", b"rootfs-bytes");
+        let work = std::env::temp_dir().join(format!("pf-fc-bind-ok-{}", unique_suffix()));
+        let config = FcConfig::new(
+            kernel,
+            rootfs,
+            work,
+            DEFAULT_GUEST_CID,
+            binding_inputs(hash),
+        )
+        .expect("matching binding must construct");
+        let _ = std::fs::remove_file(&config.rootfs);
+    }
+
+    #[test]
+    fn config_rejects_rootfs_not_matching_manifest_binding() {
+        let kernel = temp_asset("bind-bad-kernel");
+        let (rootfs, _hash) = temp_rootfs_with_hash("tampered", b"swapped-image-bytes");
+        let work = std::env::temp_dir().join(format!("pf-fc-bind-bad-{}", unique_suffix()));
+        let err = FcConfig::new(
+            kernel,
+            rootfs.clone(),
+            work,
+            DEFAULT_GUEST_CID,
+            binding_inputs("c".repeat(64)),
+        )
+        .expect_err("a swapped rootfs with an untouched manifest must fail closed");
+        assert!(
+            matches!(&err, RunnerError::Spawn(m)
+                if m.contains("does not match the manifest binding")
+                    && m.contains(&rootfs.display().to_string())
+                    && m.contains("README-host-prereqs.md")),
+            "error names the file, both hashes, and the docs: {err:?}"
+        );
+        let _ = std::fs::remove_file(&rootfs);
+    }
+
     #[test]
     fn manifest_parser_accepts_valid_and_rejects_missing_keys() {
         let good = std::env::temp_dir().join(format!("pf-fc-manifest-good-{}", unique_suffix()));
         std::fs::write(
             &good,
-            r#"{"base_image_or_packages":"busybox","build_script_sha256":"abc"}"#,
+            r#"{"base_image_or_packages":"busybox","build_script_sha256":"abc","rootfs_sha256":"def"}"#,
         )
         .expect("manifest written");
         let parsed = RootfsBuildInputs::from_manifest_path(&good).expect("valid manifest");
         assert_eq!(parsed.base_image_or_packages, "busybox");
         assert_eq!(parsed.build_script_sha256, "abc");
+        assert_eq!(parsed.rootfs_sha256, "def");
 
         let bad = std::env::temp_dir().join(format!("pf-fc-manifest-bad-{}", unique_suffix()));
         std::fs::write(&bad, r#"{"base_image_or_packages":"busybox"}"#).expect("written");
@@ -1238,6 +1384,19 @@ mod tests {
         assert!(
             matches!(&err, RunnerError::Spawn(m) if m.contains("build_script_sha256")),
             "error names the missing key: {err:?}"
+        );
+
+        let no_rootfs =
+            std::env::temp_dir().join(format!("pf-fc-manifest-norf-{}", unique_suffix()));
+        std::fs::write(
+            &no_rootfs,
+            r#"{"base_image_or_packages":"busybox","build_script_sha256":"abc"}"#,
+        )
+        .expect("written");
+        let err = RootfsBuildInputs::from_manifest_path(&no_rootfs).expect_err("missing key");
+        assert!(
+            matches!(&err, RunnerError::Spawn(m) if m.contains("rootfs_sha256")),
+            "error names the missing rootfs binding key: {err:?}"
         );
     }
 
@@ -1254,7 +1413,7 @@ mod tests {
         let manifest = temp_asset("resolve-manifest");
         std::fs::write(
             &manifest,
-            r#"{"base_image_or_packages":"busybox","build_script_sha256":"abc"}"#,
+            r#"{"base_image_or_packages":"busybox","build_script_sha256":"abc","rootfs_sha256":"def"}"#,
         )
         .expect("manifest written");
         let manifest = manifest.to_str().expect("utf8 path");
