@@ -10,6 +10,7 @@
 [![polyforge-mcp](https://img.shields.io/crates/v/polyforge-mcp?label=polyforge-mcp)](https://crates.io/crates/polyforge-mcp)
 [![polyforge-cli](https://img.shields.io/crates/v/polyforge-cli?label=polyforge-cli)](https://crates.io/crates/polyforge-cli)
 [![polyforge-tui](https://img.shields.io/crates/v/polyforge-tui?label=polyforge-tui)](https://crates.io/crates/polyforge-tui)
+[![polyforge-attest](https://img.shields.io/crates/v/polyforge-attest?label=polyforge-attest)](https://crates.io/crates/polyforge-attest)
 
 <p align="center"><img src="assets/readme/hero.en.gif" width="100%" alt="PolyForge - Make every AI claim provable"></p>
 <p align="center"><sub>Animated demo. Prefer a static image? Open <a href="assets/readme/hero.en.svg">assets/readme/hero.en.svg</a>.</sub></p>
@@ -26,7 +27,7 @@ Under the hood that notebook is an append-only Merkle chain: every entry commits
 
 ## Proof
 
-Everything described here is covered by 303 tests across the five workspace crates, plus CLI/MCP smoke and end-to-end harnesses. Run the suite yourself: `cargo build --workspace && cargo test --workspace`.
+Everything described here is covered by 414 tests across the six workspace crates, plus CLI/MCP smoke and end-to-end harnesses. Run the suite yourself: `cargo build --workspace && cargo test --workspace`.
 
 Three more reasons to trust the numbers:
 
@@ -36,10 +37,10 @@ Three more reasons to trust the numbers:
 
 ## Install & first run
 
-Install from [crates.io](https://crates.io). All five crates are published at v0.3.0; `polyforge-tui` ships with this release. You need a Rust toolchain (1.85 or newer, 1.88+ for the TUI):
+Install from [crates.io](https://crates.io). All six crates are published at v0.4.0; `polyforge-tui` and `polyforge-attest` ship with this release. You need a Rust toolchain (1.85 or newer, 1.88+ for the TUI):
 
 ```sh
-cargo install polyforge-cli polyforge-mcp polyforge-tui
+cargo install polyforge-cli polyforge-mcp polyforge-tui polyforge-attest
 ```
 
 Record a claim, prove it with a tool attestation, validate it, and pass two gates:
@@ -169,9 +170,9 @@ Transport options: `PF_MCP_TRANSPORT=stdio` (default) or `tcp` with `PF_MCP_ADDR
 LazyForge is a terminal UI for browsing tasks, validating entries, and bulk-validating over the evidence ledger. Install it with `cargo install polyforge-tui` (binary: `lazyforge`) and read the [LazyForge user guide](docs/lazyforge.md). Verified integration guides for OpenCode, Claude Code, and Codex live in [docs/integrations/](docs/integrations/), and the MCP servers-directory submission kit is in [docs/mcp-servers-pr-kit/](docs/mcp-servers-pr-kit/).
 
 <details>
-<summary><b>Architecture: five crates</b></summary>
+<summary><b>Architecture: six crates</b></summary>
 
-Workspace of five crates (edition 2021, rust-version 1.85, developed against toolchain 1.95.0):
+Workspace of six crates (edition 2021, rust-version 1.85, developed against toolchain 1.95.0):
 
 | Crate                  | Responsibility                                                                                                        |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------- |
@@ -180,6 +181,7 @@ Workspace of five crates (edition 2021, rust-version 1.85, developed against too
 | `polyforge-mcp`        | Model Context Protocol server (rmcp): the interface models use to append claims and query gates.                         |
 | `polyforge-cli`        | Operator CLI: init, append, ledger inspection, and gate execution over a local ledger.                                   |
 | `polyforge-tui`        | LazyForge terminal operator console: browse tasks, validate, bulk-validate over the evidence ledger.                      |
+| `polyforge-attest`      | Canonical JSON writer plus in-toto Statement v1 and DSSE envelope types for exporting attestations.                      |
 
 The CLI binary is named `polyforge-cli` (the crate name); `alias pf=polyforge-cli` if you prefer the short name.
 
@@ -187,7 +189,7 @@ Environment fingerprints are per-command: a Nix store-path digest and `devbox.lo
 
 Mutating or code-loading flags are denied at validation: `--fix` / `--unsafe-fixes` (ruff check), `--fix` / `--rulesdir` / `--resolve-plugins-relative-to` and non-builtin `--format` values (eslint), `--apply` / `--apply-unsafe` / `--write` (biome check), `-u` / `--update` (vitest run), `-p` (except `-p no:*`) and `--pdb` (pytest). `gcc -v` accepts no extra args. Package runners (`uv run`, `npx`, `npm exec`) are excluded entirely because their argv resolves an unbounded binary set. Tools resolve from the PATH of the polyforge process; activating your project's venv before running attestations is operator duty.
 
-Other CLI surface: `ledger summary` prints per-task state counts as one grep-able line (`tasks_verified=… tasks_validated=… tasks_failed=…`); `coverage-check --report <llvm-cov.json>` evaluates a `cargo llvm-cov --json` report against the coverage floor (default 80% aggregate / 80% per file); any `append` kind accepts optional record-only identity flags `--experiment`, `--model`, `--run`, `--budget`, and `--metadata`, carried through promotion. A global `--executor <process|sandbox>` flag placed before any subcommand selects the execution backend used for tool attestations; it is validated before anything runs, the default `process` keeps behavior byte-identical, and `sandbox` requires a build with the `sandbox-mock` feature (the live microVM adapter is a follow-up). Environment variables: `PF_LEDGER` (ledger path, default `.pf/ledger.jsonl`), `PF_EVIDENCE_DIR` (gate bundles, default `.pf/evidence/`), `PF_ENV_FINGERPRINT` (operator-supplied fingerprint recorded on attestations, default `cli`).
+Other CLI surface: `ledger summary` prints per-task state counts as one grep-able line (`tasks_verified=… tasks_validated=… tasks_failed=…`); `coverage-check --report <llvm-cov.json>` evaluates a `cargo llvm-cov --json` report against the coverage floor (default 80% aggregate / 80% per file); any `append` kind accepts optional record-only identity flags `--experiment`, `--model`, `--run`, `--budget`, and `--metadata`, carried through promotion. A global `--executor <process|sandbox>` flag placed before any subcommand selects the execution backend used for tool attestations; it is validated before anything runs, the default `process` keeps behavior byte-identical, and `sandbox` takes an explicit `--sandbox-backend <container|gvisor|firecracker>` tier: each backend ships behind its own cargo feature, is probed fail-closed before any run, and the attestation records its tier-prefixed executor digest (`container:` / `gvisor:` / `fc:`). Environment variables: `PF_LEDGER` (ledger path, default `.pf/ledger.jsonl`), `PF_EVIDENCE_DIR` (gate bundles, default `.pf/evidence/`), `PF_ENV_FINGERPRINT` (operator-supplied fingerprint recorded on attestations, default `cli`).
 
 Build from source:
 

@@ -10,6 +10,7 @@
 [![polyforge-mcp](https://img.shields.io/crates/v/polyforge-mcp?label=polyforge-mcp)](https://crates.io/crates/polyforge-mcp)
 [![polyforge-cli](https://img.shields.io/crates/v/polyforge-cli?label=polyforge-cli)](https://crates.io/crates/polyforge-cli)
 [![polyforge-tui](https://img.shields.io/crates/v/polyforge-tui?label=polyforge-tui)](https://crates.io/crates/polyforge-tui)
+[![polyforge-attest](https://img.shields.io/crates/v/polyforge-attest?label=polyforge-attest)](https://crates.io/crates/polyforge-attest)
 
 <p align="center"><img src="assets/readme/hero.de.gif" width="100%" alt="PolyForge - Mach jede KI-Aussage beweisbar"></p>
 <p align="center"><sub>Animierte Demo. Lieber ein statisches Bild? Öffne <a href="assets/readme/hero.de.svg">assets/readme/hero.de.svg</a>.</sub></p>
@@ -26,7 +27,7 @@ Unter der Haube ist dieses Notizbuch eine append-only Merkle-Kette: Jeder Eintra
 
 ## Nachweis
 
-Alles hier Beschriebene ist durch 303 Tests über die fünf Workspace-Crates abgedeckt, dazu CLI-/MCP-Smoke- und End-to-End-Harnesses. Führe die Suite selbst aus: `cargo build --workspace && cargo test --workspace`.
+Alles hier Beschriebene ist durch 414 Tests über die sechs Workspace-Crates abgedeckt, dazu CLI-/MCP-Smoke- und End-to-End-Harnesses. Führe die Suite selbst aus: `cargo build --workspace && cargo test --workspace`.
 
 Drei weitere Gründe, den Zahlen zu vertrauen:
 
@@ -36,10 +37,10 @@ Drei weitere Gründe, den Zahlen zu vertrauen:
 
 ## Installation & erster Lauf
 
-Installiere von [crates.io](https://crates.io). Alle fünf Crates sind bei v0.3.0 veröffentlicht; `polyforge-tui` kommt mit diesem Release. Du brauchst eine Rust-Toolchain (1.85 oder neuer, 1.88+ für die TUI):
+Installiere von [crates.io](https://crates.io). Alle sechs Crates sind bei v0.4.0 veröffentlicht; `polyforge-tui` und `polyforge-attest` kommen mit diesem Release. Du brauchst eine Rust-Toolchain (1.85 oder neuer, 1.88+ für die TUI):
 
 ```sh
-cargo install polyforge-cli polyforge-mcp polyforge-tui
+cargo install polyforge-cli polyforge-mcp polyforge-tui polyforge-attest
 ```
 
 Zeichne eine Behauptung auf, beweise sie mit einer Tool-Attestation, validiere sie und bestehe zwei Gates:
@@ -169,9 +170,9 @@ Transportoptionen: `PF_MCP_TRANSPORT=stdio` (Standard) oder `tcp` mit `PF_MCP_AD
 LazyForge ist ein Terminal-UI zum Durchstöbern von Tasks, Validieren von Einträgen und Bulk-Validieren über die Evidence-Ledger. Installiere es mit `cargo install polyforge-tui` (Binary: `lazyforge`) und lies den [LazyForge-Benutzerleitfaden](docs/lazyforge.md). Verifizierte Integrationsleitfäden für OpenCode, Claude Code und Codex liegen in [docs/integrations/](docs/integrations/), und das Einreichungskit für das MCP-Servers-Verzeichnis liegt in [docs/mcp-servers-pr-kit/](docs/mcp-servers-pr-kit/).
 
 <details>
-<summary><b>Architektur: fünf Crates</b></summary>
+<summary><b>Architektur: sechs Crates</b></summary>
 
-Workspace aus fünf Crates (Edition 2021, rust-version 1.85, entwickelt gegen Toolchain 1.95.0):
+Workspace aus sechs Crates (Edition 2021, rust-version 1.85, entwickelt gegen Toolchain 1.95.0):
 
 | Crate                  | Verantwortlichkeit                                                                                                       |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -180,6 +181,7 @@ Workspace aus fünf Crates (Edition 2021, rust-version 1.85, entwickelt gegen To
 | `polyforge-mcp`        | Model Context Protocol Server (rmcp): die Schnittstelle, über die Modelle Claims anhängen und Gates abfragen.                |
 | `polyforge-cli`        | Operator-CLI: init, append, Ledger-Inspektion und Gate-Ausführung über eine lokale Ledger.                                   |
 | `polyforge-tui`        | LazyForge Terminal-Operator-Konsole: Tasks durchstöbern, validieren, Bulk-Validieren über die Evidence-Ledger.               |
+| `polyforge-attest`      | Canonical-JSON-Writer plus in-toto Statement v1 und DSSE-Envelope-Typen für den Export von Attestationen.                   |
 
 Das CLI-Binary heißt `polyforge-cli` (der Crate-Name); `alias pf=polyforge-cli`, falls du den Kurznamen bevorzugst.
 

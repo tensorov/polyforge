@@ -10,6 +10,7 @@
 [![polyforge-mcp](https://img.shields.io/crates/v/polyforge-mcp?label=polyforge-mcp)](https://crates.io/crates/polyforge-mcp)
 [![polyforge-cli](https://img.shields.io/crates/v/polyforge-cli?label=polyforge-cli)](https://crates.io/crates/polyforge-cli)
 [![polyforge-tui](https://img.shields.io/crates/v/polyforge-tui?label=polyforge-tui)](https://crates.io/crates/polyforge-tui)
+[![polyforge-attest](https://img.shields.io/crates/v/polyforge-attest?label=polyforge-attest)](https://crates.io/crates/polyforge-attest)
 
 <p align="center"><img src="assets/readme/hero.ru.gif" width="100%" alt="PolyForge - Превращайте заявления ИИ в факты"></p>
 <p align="center"><sub>Анимированная демонстрация. Предпочитаете статичное изображение? Откройте <a href="assets/readme/hero.ru.svg">assets/readme/hero.ru.svg</a>.</sub></p>
@@ -26,7 +27,7 @@
 
 ## Доказательство
 
-Всё описанное здесь покрыто 303 тестами по пяти крейтам воркспейса, плюс smoke-проверки CLI/MCP и end-to-end харнессы. Запустите набор сами: `cargo build --workspace && cargo test --workspace`.
+Всё описанное здесь покрыто 414 тестами по шести крейтам воркспейса, плюс smoke-проверки CLI/MCP и end-to-end харнессы. Запустите набор сами: `cargo build --workspace && cargo test --workspace`.
 
 Ещё три причины доверять этим числам:
 
@@ -36,10 +37,10 @@
 
 ## Установка и первый запуск
 
-Установка из [crates.io](https://crates.io). Все пять крейтов опубликованы на версии v0.3.0; `polyforge-tui` выходит вместе с этим релизом. Нужен тулчейн Rust (1.85 или новее, 1.88+ для TUI):
+Установка из [crates.io](https://crates.io). Все шесть крейтов опубликованы на версии v0.4.0; `polyforge-tui` и `polyforge-attest` выходят вместе с этим релизом. Нужен тулчейн Rust (1.85 или новее, 1.88+ для TUI):
 
 ```sh
-cargo install polyforge-cli polyforge-mcp polyforge-tui
+cargo install polyforge-cli polyforge-mcp polyforge-tui polyforge-attest
 ```
 
 Запишите заявление, докажите его аттестацией инструмента, провалидируйте и пройдите два гейта:
@@ -169,9 +170,9 @@ env = { PF_MCP_TRANSPORT = "stdio" }
 LazyForge это терминальный UI для просмотра задач, валидации записей и массовой валидации по журналу доказательств. Установите командой `cargo install polyforge-tui` (бинарник: `lazyforge`) и прочитайте [руководство пользователя LazyForge](docs/lazyforge.md). Проверенные руководства по интеграции для OpenCode, Claude Code и Codex лежат в [docs/integrations/](docs/integrations/), а комплект подачи в каталог MCP servers находится в [docs/mcp-servers-pr-kit/](docs/mcp-servers-pr-kit/).
 
 <details>
-<summary><b>Архитектура: пять крейтов</b></summary>
+<summary><b>Архитектура: шесть крейтов</b></summary>
 
-Воркспейс из пяти крейтов (edition 2021, rust-version 1.85, разработка ведётся на тулчейне 1.95.0):
+Воркспейс из шести крейтов (edition 2021, rust-version 1.85, разработка ведётся на тулчейне 1.95.0):
 
 | Крейт                  | Ответственность                                                                                                          |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -180,6 +181,7 @@ LazyForge это терминальный UI для просмотра зада�
 | `polyforge-mcp`        | Сервер Model Context Protocol (rmcp): интерфейс, которым модели пользуются, чтобы добавлять заявления и опрашивать гейты.   |
 | `polyforge-cli`        | Операторский CLI: init, append, инспекция журнала и исполнение гейтов над локальным журналом.                               |
 | `polyforge-tui`        | Терминальная операторская консоль LazyForge: просмотр задач, валидация, массовая валидация по журналу доказательств.        |
+| `polyforge-attest`      | Канонический JSON-писатель плюс типы in-toto Statement v1 и DSSE-конвертов для экспорта аттестаций.                        |
 
 Бинарник CLI называется `polyforge-cli` (это имя крейта); сделайте `alias pf=polyforge-cli`, если предпочитаете короткое имя.
 

@@ -10,6 +10,7 @@
 [![polyforge-mcp](https://img.shields.io/crates/v/polyforge-mcp?label=polyforge-mcp)](https://crates.io/crates/polyforge-mcp)
 [![polyforge-cli](https://img.shields.io/crates/v/polyforge-cli?label=polyforge-cli)](https://crates.io/crates/polyforge-cli)
 [![polyforge-tui](https://img.shields.io/crates/v/polyforge-tui?label=polyforge-tui)](https://crates.io/crates/polyforge-tui)
+[![polyforge-attest](https://img.shields.io/crates/v/polyforge-attest?label=polyforge-attest)](https://crates.io/crates/polyforge-attest)
 
 <p align="center"><img src="assets/readme/hero.zh.gif" width="100%" alt="PolyForge - 让 AI 声明变成可验证的事实"></p>
 <p align="center"><sub>动画演示。偏好静态图片？请打开 <a href="assets/readme/hero.zh.svg">assets/readme/hero.zh.svg</a>。</sub></p>
@@ -26,7 +27,7 @@ AI 编码智能体工作迅速，并自行汇报结果。PolyForge 为你的仓�
 
 ## 证明
 
-本文描述的一切都由五个 workspace crate 中的 303 个测试覆盖，外加 CLI/MCP 冒烟测试和端到端测试套件。请亲自运行：`cargo build --workspace && cargo test --workspace`。
+本文描述的一切都由六个 workspace crate 中的 414 个测试覆盖，外加 CLI/MCP 冒烟测试和端到端测试套件。请亲自运行：`cargo build --workspace && cargo test --workspace`。
 
 还有三个相信这些数字的理由：
 
@@ -36,10 +37,10 @@ AI 编码智能体工作迅速，并自行汇报结果。PolyForge 为你的仓�
 
 ## 安装与首次运行
 
-从 [crates.io](https://crates.io) 安装。全部五个 crate 均以 v0.3.0 发布；`polyforge-tui` 随本次发布一同推出。你需要一个 Rust 工具链（1.85 或更新版本，TUI 需要 1.88+）：
+从 [crates.io](https://crates.io) 安装。全部六个 crate 均以 v0.4.0 发布；`polyforge-tui` 和 `polyforge-attest` 随本次发布一同推出。你需要一个 Rust 工具链（1.85 或更新版本，TUI 需要 1.88+）：
 
 ```sh
-cargo install polyforge-cli polyforge-mcp polyforge-tui
+cargo install polyforge-cli polyforge-mcp polyforge-tui polyforge-attest
 ```
 
 记录一条声明，用工具证明记录证实它，验证它，然后通过两道门禁：
@@ -169,9 +170,9 @@ env = { PF_MCP_TRANSPORT = "stdio" }
 LazyForge 是一个终端 UI，用于浏览任务、验证条目以及在证据账本上批量验证。使用 `cargo install polyforge-tui` 安装（二进制名：`lazyforge`），并阅读 [LazyForge 用户指南](docs/lazyforge.md)。OpenCode、Claude Code 和 Codex 的已验证集成指南位于 [docs/integrations/](docs/integrations/)，MCP servers 目录提交套件位于 [docs/mcp-servers-pr-kit/](docs/mcp-servers-pr-kit/)。
 
 <details>
-<summary><b>架构：五个 crate</b></summary>
+<summary><b>架构：六个 crate</b></summary>
 
-由五个 crate 组成的 workspace（edition 2021，rust-version 1.85，基于 toolchain 1.95.0 开发）：
+由六个 crate 组成的 workspace（edition 2021，rust-version 1.85，基于 toolchain 1.95.0 开发）：
 
 | Crate                  | 职责                                                                                                                     |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -180,6 +181,7 @@ LazyForge 是一个终端 UI，用于浏览任务、验证条目以及在证据�
 | `polyforge-mcp`        | Model Context Protocol 服务器（rmcp）：模型用于追加声明和查询门禁的接口。                                                   |
 | `polyforge-cli`        | 操作员 CLI：init、append、账本检查以及本地账本上的门禁执行。                                                                |
 | `polyforge-tui`        | LazyForge 终端操作员控制台：浏览任务、验证、在证据账本上批量验证。                                                          |
+| `polyforge-attest`      | 规范化 JSON 写入器，附带 in-toto Statement v1 与 DSSE 信封类型，用于导出证明记录。                                          |
 
 CLI 二进制名为 `polyforge-cli`（即 crate 名）；如果你喜欢短名称，可以 `alias pf=polyforge-cli`。
 
