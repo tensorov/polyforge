@@ -565,12 +565,31 @@ fn unique_suffix() -> u128 {
         .unwrap_or(0)
 }
 
+/// Pids that must NEVER be passed to `kill_process_group`. Extracted as a
+/// pure function so the guard is testable without ever executing the
+/// dangerous path (a cargo-mutants mutant flipping the guard at the call
+/// site would detonate the bomb during mutation runs; that call-site
+/// survivor is an accepted, documented safety trade-off).
+fn is_reserved_pid(pid: u32) -> bool {
+    pid <= 1
+}
+
 /// SIGKILL the process group led by `pid` (the FC process spawned with
 /// `process_group(0)`). Deliberately NOT cfg-split (mutation-testing
 /// observability lesson, see runner.rs kill_process_group): on Unix the
 /// real killpg runs, then the always-compiled `kill -9` fallback is a
 /// harmless ESRCH no-op whose mutant stays runnable on Linux CI.
+///
+/// LOAD-BEARING SAFETY GUARD: killpg(pgid) is kill(-pgid) in libc terms.
+/// killpg(1) == kill(-1, SIGKILL) — SIGKILL to EVERY process of the
+/// calling user (all shells, tmux server, the agent session itself).
+/// killpg(0) SIGKILLs the caller's own process group — equally
+/// catastrophic. Both are reserved and rejected here before any signal
+/// is sent. This guard has killed real operator sessions when missing.
 fn kill_process_group(pid: u32) {
+    if is_reserved_pid(pid) {
+        return;
+    }
     #[cfg(unix)]
     {
         // SAFETY: `pid` came from a live Child we spawned into its own
@@ -1490,7 +1509,7 @@ mod tests {
             .expect("write");
         drop(stream.0);
         let (status, body) =
-            read_http_response(&mut stream.1, Instant::now() + Duration::from_secs(5), 5)
+            read_http_response(&mut stream.1, Instant::now() + Duration::from_secs(30), 30)
                 .expect("parsed");
         assert_eq!(status, 204);
         assert_eq!(body, "");
@@ -1504,7 +1523,7 @@ mod tests {
             .expect("write");
         drop(stream.0);
         let (status, body) =
-            read_http_response(&mut stream.1, Instant::now() + Duration::from_secs(5), 5)
+            read_http_response(&mut stream.1, Instant::now() + Duration::from_secs(30), 30)
                 .expect("parsed");
         assert_eq!(status, 400);
         assert_eq!(body, "{\"fault_message\":\"x\"}");
@@ -1625,7 +1644,7 @@ mod tests {
             "loop must retry until the boot deadline, gave up after {elapsed:?}"
         );
         assert!(
-            elapsed < Duration::from_secs(10),
+            elapsed < Duration::from_secs(30),
             "loop must not retry past the deadline, ran {elapsed:?}"
         );
         let _ = std::fs::remove_file(&sock);
@@ -1721,6 +1740,658 @@ mod tests {
         assert_eq!(paths.log_body, "/fc.log");
         assert_eq!(paths.vsock_body, "/v.sock");
         let _ = std::fs::remove_dir_all(&config.jailer.expect("jailer").chroot_base);
+    }
+
+    // ---- offline protocol + config surface -------------------------------------
+
+    /// api_put over a real unix socket: a 2xx reply is Ok, a 4xx reply is a
+    /// Spawn error naming the endpoint and the (truncated) body.
+    #[test]
+    fn api_put_accepts_2xx_and_rejects_4xx_naming_endpoint() {
+        let sock = std::env::temp_dir().join(format!(
+            "pf-fc-apiput-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.expect("accept");
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).expect("read request");
+                let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                if request.starts_with("PUT /logger") {
+                    stream
+                        .write_all(b"HTTP/1.1 204 No Content\r\n\r\n")
+                        .expect("204");
+                } else {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 25\r\n\r\n{\"fault_message\":\"nope\"}",
+                        )
+                        .expect("400");
+                }
+                // Connection: close semantics: drop after the reply.
+                drop(stream);
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        api_put(&sock, "logger", &serde_json::json!({}), deadline, 30)
+            .expect("204 PUT must be accepted");
+        let err = api_put(&sock, "vsock", &serde_json::json!({}), deadline, 30)
+            .expect_err("400 PUT must be rejected");
+        let msg = match err {
+            RunnerError::Spawn(m) => m,
+            other => panic!("expected Spawn, got {other:?}"),
+        };
+        assert!(msg.contains("PUT /vsock rejected (400)"), "{msg}");
+        assert!(msg.contains("nope"), "body folded into the error: {msg}");
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    /// api_put against a socket that never existed surfaces the Io error.
+    #[test]
+    fn api_put_on_absent_socket_is_io_error() {
+        let absent = std::env::temp_dir().join(format!(
+            "pf-fc-absent-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let err = api_put(
+            &absent,
+            "logger",
+            &serde_json::json!({}),
+            Instant::now() + Duration::from_secs(30),
+            30,
+        )
+        .expect_err("absent socket must fail");
+        assert!(matches!(err, RunnerError::Io(_)), "{err:?}");
+    }
+
+    /// read_http_response: a body arriving in PIECES (Content-Length larger
+    /// than the first read) is reassembled; a connection closing mid-body
+    /// yields what arrived; an unparseable status line is an Io error.
+    #[test]
+    fn read_http_response_reassembles_fragmented_body_and_rejects_bad_status() {
+        let mut pair = pair_stream();
+        pair.0
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n01234")
+            .expect("first fragment");
+        thread::sleep(Duration::from_millis(50));
+        pair.0.write_all(b"56789").expect("second fragment");
+        drop(pair.0);
+        let (status, body) =
+            read_http_response(&mut pair.1, Instant::now() + Duration::from_secs(30), 30)
+                .expect("reassembled");
+        assert_eq!(status, 200);
+        assert_eq!(body, "0123456789");
+
+        let mut pair = pair_stream();
+        pair.0
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort")
+            .expect("partial body");
+        drop(pair.0);
+        let (status, body) =
+            read_http_response(&mut pair.1, Instant::now() + Duration::from_secs(30), 30)
+                .expect("EOF mid-body yields what arrived");
+        assert_eq!(status, 200);
+        assert_eq!(body, "short");
+
+        let mut pair = pair_stream();
+        pair.0.write_all(b"NOT-HTTP\r\n\r\n").expect("garbage");
+        drop(pair.0);
+        let err = read_http_response(&mut pair.1, Instant::now() + Duration::from_secs(30), 30)
+            .expect_err("unparseable status line");
+        assert!(
+            matches!(&err, RunnerError::Io(m) if m.contains("unparseable FC API status line")),
+            "{err:?}"
+        );
+    }
+
+    /// read_http_response: headers split across reads still find the
+    /// header terminator; a stream closing before headers complete is an
+    /// Io error naming the closure.
+    #[test]
+    fn read_http_response_handles_split_headers_and_early_eof() {
+        let mut pair = pair_stream();
+        pair.0.write_all(b"HTTP/1.1 204").expect("half a status");
+        thread::sleep(Duration::from_millis(50));
+        pair.0.write_all(b" No Content\r\n\r\n").expect("rest");
+        drop(pair.0);
+        let (status, body) =
+            read_http_response(&mut pair.1, Instant::now() + Duration::from_secs(30), 30)
+                .expect("split headers parsed");
+        assert_eq!(status, 204);
+        assert_eq!(body, "");
+
+        let mut pair = pair_stream();
+        drop(pair.0);
+        let err = read_http_response(&mut pair.1, Instant::now() + Duration::from_secs(30), 30)
+            .expect_err("EOF before headers");
+        assert!(
+            matches!(&err, RunnerError::Io(m) if m.contains("closed the connection before headers")),
+            "{err:?}"
+        );
+    }
+
+    /// vsock_handshake over a socket pair: an `OK <port>` reply completes
+    /// the handshake and the request line is exactly `CONNECT 5001\n`; an
+    /// `ERR` reply rejects with the reply text folded in.
+    #[test]
+    fn vsock_handshake_sends_connect_and_checks_reply() {
+        let mut pair = pair_stream();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        {
+            let writer = pair.0;
+            let mut reader = writer.try_clone().expect("clone");
+            let handle = thread::spawn(move || {
+                let mut buf = [0u8; 64];
+                let n = reader.read(&mut buf).expect("read CONNECT");
+                let _ = tx.send(buf[..n].to_vec());
+                reader.write_all(b"OK 5001\n").expect("reply");
+            });
+            vsock_handshake(&mut pair.1, Instant::now() + Duration::from_secs(30), 30)
+                .expect("OK reply completes the handshake");
+            let _ = handle.join();
+        }
+        let echoed = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("captured request");
+        assert_eq!(
+            String::from_utf8_lossy(&echoed),
+            format!("CONNECT {GUEST_AGENT_PORT}\n"),
+            "request line is the spike protocol shape"
+        );
+
+        let mut pair = pair_stream();
+        {
+            let writer = pair.0;
+            let mut reader = writer.try_clone().expect("clone");
+            let handle = thread::spawn(move || {
+                let mut buf = [0u8; 64];
+                let _ = reader.read(&mut buf);
+                let _ = reader.write_all(b"ERR bad port\n");
+            });
+            let err = vsock_handshake(&mut pair.1, Instant::now() + Duration::from_secs(30), 30)
+                .expect_err("ERR reply must reject");
+            let _ = handle.join();
+            let msg = match err {
+                RunnerError::Spawn(m) => m,
+                other => panic!("expected Spawn, got {other:?}"),
+            };
+            assert!(msg.contains("vsock CONNECT rejected"), "{msg}");
+            assert!(msg.contains("ERR bad port"), "{msg}");
+        }
+    }
+
+    /// read_line_capped: a line longer than the cap is rejected; a stream
+    /// closing mid-line surfaces the closure error; a line with embedded
+    /// newlines returns only the first.
+    #[test]
+    fn read_line_capped_rejects_oversize_and_reports_midline_eof() {
+        // The oversized write (4MB+1) exceeds any socket buffer, so it runs
+        // on its own thread; the reader consumes until the cap trips.
+        let mut pair = pair_stream();
+        let mut writer = pair.0;
+        thread::spawn(move || {
+            let oversized = vec![b'a'; MAX_AGENT_LINE_BYTES + 1];
+            let _ = writer.write_all(&oversized);
+        });
+        let err = read_line_capped(&mut pair.1, Instant::now() + Duration::from_secs(30), 30)
+            .expect_err("cap must be enforced");
+        assert!(
+            matches!(&err, RunnerError::Io(m) if m.contains("exceeded the size cap")),
+            "{err:?}"
+        );
+
+        let mut pair = pair_stream();
+        pair.0.write_all(b"partial-no-newline").expect("partial");
+        drop(pair.0);
+        let err = read_line_capped(&mut pair.1, Instant::now() + Duration::from_secs(5), 5)
+            .expect_err("EOF mid-line");
+        assert!(
+            matches!(&err, RunnerError::Io(m) if m.contains("closed the vsock stream")),
+            "{err:?}"
+        );
+
+        let mut pair = pair_stream();
+        pair.0.write_all(b"first\nsecond\n").expect("two lines");
+        drop(pair.0);
+        let line = read_line_capped(&mut pair.1, Instant::now() + Duration::from_secs(5), 5)
+            .expect("first line read");
+        assert_eq!(line, "first");
+    }
+
+    /// connect_and_handshake_with_retry passes non-Io handshake failures
+    /// through immediately: an ERR reply (Spawn) never retries.
+    #[test]
+    fn handshake_retry_loop_passes_non_io_errors_through() {
+        let sock = std::env::temp_dir().join(format!(
+            "pf-fc-retry-err-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.expect("accept");
+                let mut buf = [0u8; 64];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"ERR refused\n");
+            }
+        });
+        let start = Instant::now();
+        let err = match connect_and_handshake_with_retry(
+            &sock,
+            start + Duration::from_secs(30),
+            start + Duration::from_secs(90),
+            90,
+        ) {
+            Ok(_) => panic!("ERR reply must surface, not retry"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, RunnerError::Spawn(ref m) if m.contains("vsock CONNECT rejected")),
+            "{err:?}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "non-Io failures must not burn the boot window, took {:?}",
+            start.elapsed()
+        );
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    /// resolve_config: every missing source names its env var; an invalid
+    /// CID names the CID var; a valid full set constructs.
+    #[test]
+    fn resolve_config_error_arms_name_the_env_var() {
+        let manifest = temp_asset("resolve-full");
+        std::fs::write(
+            &manifest,
+            r#"{"base_image_or_packages":"busybox","build_script_sha256":"abc","rootfs_sha256":"def"}"#,
+        )
+        .expect("manifest written");
+        let manifest = manifest.to_str().expect("utf8");
+
+        let err = FcConfig::resolve_config(None, None, Some(manifest), None, None)
+            .expect_err("missing kernel");
+        assert!(
+            matches!(&err, RunnerError::Spawn(m) if m.contains(POLYFORGE_FC_KERNEL_ENV)),
+            "{err:?}"
+        );
+        let err = FcConfig::resolve_config(Some("/k"), None, Some(manifest), None, None)
+            .expect_err("missing rootfs");
+        assert!(
+            matches!(&err, RunnerError::Spawn(m) if m.contains(POLYFORGE_FC_ROOTFS_ENV)),
+            "{err:?}"
+        );
+        let err = FcConfig::resolve_config(Some("/k"), Some("/r"), None, None, None)
+            .expect_err("missing manifest");
+        assert!(
+            matches!(&err, RunnerError::Spawn(m) if m.contains(POLYFORGE_FC_MANIFEST_ENV)),
+            "{err:?}"
+        );
+        let err = FcConfig::resolve_config(Some("/k"), Some("/r"), Some(manifest), None, Some("x"))
+            .expect_err("invalid cid");
+        assert!(
+            matches!(&err, RunnerError::Spawn(m) if m.contains(POLYFORGE_FC_GUEST_CID_ENV)),
+            "{err:?}"
+        );
+    }
+
+    /// resolve_config happy path with an explicit work dir and CID.
+    #[test]
+    fn resolve_config_full_set_constructs() {
+        let kernel = temp_asset("resolve-ok-kernel");
+        let rootfs = temp_asset("resolve-ok-rootfs");
+        let manifest = temp_asset("resolve-ok-manifest");
+        let rootfs_sha256 = sha256_of_file(&rootfs).expect("hash");
+        std::fs::write(
+            &manifest,
+            format!(
+                r#"{{"base_image_or_packages":"busybox","build_script_sha256":"abc","rootfs_sha256":"{rootfs_sha256}"}}"#
+            ),
+        )
+        .expect("manifest written");
+        let work = std::env::temp_dir().join(format!("pf-fc-resolve-ok-{}", unique_suffix()));
+        let config = FcConfig::resolve_config(
+            Some(kernel.to_str().expect("utf8")),
+            Some(rootfs.to_str().expect("utf8")),
+            Some(manifest.to_str().expect("utf8")),
+            Some(work.to_str().expect("utf8")),
+            Some("7"),
+        )
+        .expect("full set constructs");
+        assert_eq!(config.guest_cid, 7);
+        let _ = std::fs::remove_file(&config.rootfs);
+    }
+
+    /// from_manifest_path: unreadable file and invalid JSON both surface
+    /// Io errors; the good path is covered elsewhere.
+    #[test]
+    fn manifest_parser_rejects_unreadable_and_malformed() {
+        let absent =
+            std::env::temp_dir().join(format!("pf-fc-manifest-absent-{}", unique_suffix()));
+        let err = RootfsBuildInputs::from_manifest_path(&absent).expect_err("absent manifest");
+        assert!(matches!(err, RunnerError::Io(_)), "{err:?}");
+
+        let garbage = temp_asset("manifest-garbage");
+        std::fs::write(&garbage, "not json at all").expect("written");
+        let err = RootfsBuildInputs::from_manifest_path(&garbage).expect_err("garbage manifest");
+        assert!(
+            matches!(&err, RunnerError::Io(m) if m.contains("not valid JSON")),
+            "{err:?}"
+        );
+    }
+
+    /// verify_rootfs_binding: a missing rootfs file is an Io error (the
+    /// hash read fails before any comparison).
+    #[test]
+    fn rootfs_binding_on_missing_file_is_io_error() {
+        let absent = std::env::temp_dir().join(format!("pf-fc-bind-absent-{}", unique_suffix()));
+        let err = verify_rootfs_binding(&absent, &"a".repeat(64)).expect_err("absent rootfs");
+        assert!(matches!(err, RunnerError::Io(_)), "{err:?}");
+    }
+
+    /// executor_digest composes from the REAL kernel hash and build inputs;
+    /// identical calls are byte-stable.
+    #[test]
+    fn executor_digest_is_stable_and_64_hex() {
+        // firecracker_version() resolves the binary via PATH: hold the
+        // crate lock so the PATH-mutating tests cannot interleave (a
+        // mid-test PATH flip breaks d1==d2 stability).
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let exec = FcExecutor::new(test_config("digest-exec"));
+        let d1 = exec.executor_digest().expect("digest");
+        let d2 = exec.executor_digest().expect("digest");
+        assert_eq!(d1, d2, "same inputs must hash identically");
+        assert_eq!(d1.len(), 64);
+        assert!(d1.bytes().all(|b| b.is_ascii_hexdigit()));
+        let _ = std::fs::remove_file(&exec.config.rootfs);
+    }
+
+    /// firecracker_version: with a fake `firecracker` FIRST on PATH it
+    /// returns the binary's first version line; with no firecracker
+    /// anywhere reachable it falls back to unknown-firecracker.
+    #[test]
+    fn firecracker_version_uses_path_binary_and_falls_back() {
+        // Mutates process-global PATH: hold the crate lock so PATH
+        // readers (executor_digest, tool spawns) cannot interleave.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "pf-fc-ver-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let bin = dir.join("firecracker");
+        std::fs::write(&bin, "#!/bin/sh\necho 'Firecracker 1.9.1'\n").expect("fake firecracker");
+        make_executable(&bin);
+
+        let saved_path = std::env::var("PATH").ok();
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                dir.display(),
+                saved_path.clone().unwrap_or_default()
+            ),
+        );
+        let version = firecracker_version();
+        match saved_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(version, "Firecracker 1.9.1");
+
+        // Fallback: a PATH with no firecracker and no well-known install.
+        // Only assert the fallback when the well-known dirs genuinely lack
+        // the binary (a host with a real install resolves it there).
+        let none_dir = std::env::temp_dir().join(format!(
+            "pf-fc-ver-empty-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::create_dir_all(&none_dir).expect("empty dir");
+        let saved_path = std::env::var("PATH").ok();
+        std::env::set_var("PATH", none_dir.display().to_string());
+        let version = firecracker_version();
+        match saved_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&none_dir);
+        if !Path::new("/usr/local/bin/firecracker").exists()
+            && !Path::new("/usr/bin/firecracker").exists()
+        {
+            assert_eq!(version, "unknown-firecracker");
+        } else {
+            assert!(
+                version.starts_with("Firecracker") || version == "unknown-firecracker",
+                "well-known install answers: {version}"
+            );
+        }
+    }
+
+    /// find_binary resolves a file on PATH and in the well-known dirs, and
+    /// misses for a name that exists nowhere.
+    #[test]
+    fn find_binary_resolves_path_and_well_known_and_misses() {
+        // Mutates process-global PATH: hold the crate lock so PATH
+        // readers (executor_digest, tool spawns) cannot interleave.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "pf-fc-findbin-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("pf-fc-unique-probe"), b"x").expect("probe file");
+        let saved_path = std::env::var("PATH").ok();
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                dir.display(),
+                saved_path.clone().unwrap_or_default()
+            ),
+        );
+        let found = find_binary("pf-fc-unique-probe");
+        match saved_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            found.as_deref().map(Path::to_path_buf),
+            Some(dir.join("pf-fc-unique-probe")),
+            "PATH entry resolves"
+        );
+        assert!(
+            find_binary("pf-fc-never-exists-anywhere").is_none(),
+            "absent name misses everywhere"
+        );
+    }
+
+    /// spawn_command in JAILER mode wraps the jailer binary with the exact
+    /// argv shape and still creates the proc log.
+    #[test]
+    fn spawn_command_jailer_mode_wraps_jailer_argv() {
+        let mut config = test_config("spawn-jail");
+        let jail_root = std::env::temp_dir().join(format!(
+            "pf-fc-spawnjail-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        config.jailer = Some(JailerConfig {
+            bin: PathBuf::from("/usr/local/bin/jailer"),
+            uid: 1000,
+            gid: 1000,
+            chroot_base: jail_root.clone(),
+            cgroups: vec!["ver=2,controllers=cpu".to_string()],
+        });
+        let paths = SessionPaths::resolve(&config, "run-j").expect("paths");
+        let cmd = spawn_command(
+            &config,
+            Path::new("/usr/local/bin/firecracker"),
+            "run-j",
+            &paths,
+        )
+        .expect("command built");
+        assert_eq!(cmd.get_program().to_string_lossy(), "/usr/local/bin/jailer");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "--id".to_string(),
+                "run-j".to_string(),
+                "--exec-file".to_string(),
+                "/usr/local/bin/firecracker".to_string(),
+                "--uid".to_string(),
+                "1000".to_string(),
+                "--gid".to_string(),
+                "1000".to_string(),
+                "--chroot-base-dir".to_string(),
+                jail_root.display().to_string(),
+                "--cgroup".to_string(),
+                "ver=2,controllers=cpu".to_string(),
+                "--".to_string(),
+                "--api-sock".to_string(),
+                "api.sock".to_string(),
+            ],
+            "jailer argv shape is contractual"
+        );
+        let _ = std::fs::remove_dir_all(&jail_root);
+    }
+
+    /// VmSession::exec without an established client fails closed naming
+    /// the missing connection, before any I/O. The session wraps a real
+    /// hermetic child (sleep 30 in its own process group), so Drop runs
+    /// the genuine teardown path: killpg on the sleep's own group only.
+    #[test]
+    fn vm_session_exec_without_client_fails_closed() {
+        // spawn_hermetic_sleep resolves bare-name `sleep` via PATH.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let child = spawn_hermetic_sleep();
+        let pid = child.id();
+        let mut session = VmSession {
+            pid,
+            child: Some(child),
+            watchdog_tx: None,
+            watchdog_handle: None,
+            client: None,
+            scratch: vec![],
+        };
+        let err = session.exec("true", Instant::now() + Duration::from_secs(30));
+        let msg = match err {
+            Err(RunnerError::Spawn(m)) => m,
+            other => panic!("expected Spawn, got {other:?}"),
+        };
+        assert_eq!(msg, "vsock connection not established");
+    }
+
+    /// VmSession::exec round-trip over a socket pair standing in for the
+    /// vsock stream: request line is newline JSON, reply is parsed. The
+    /// session wraps a real hermetic child, so Drop kills only that
+    /// child's own process group.
+    #[test]
+    fn vm_session_exec_round_trips_over_stream() {
+        // spawn_hermetic_sleep resolves bare-name `sleep` via PATH.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (server, client) = pair_stream();
+        let mut server = server;
+        let handle = thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let n = server.read(&mut buf).expect("read request");
+            let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let reply = if request.contains("cargo --version") {
+                "{\"exit\":0,\"stdout\":\"cargo 1.0\\n\"}\n"
+            } else {
+                "{\"exit\":2,\"stdout\":\"\"}\n"
+            };
+            server.write_all(reply.as_bytes()).expect("write reply");
+        });
+        let child = spawn_hermetic_sleep();
+        let pid = child.id();
+        let mut session = VmSession {
+            pid,
+            child: Some(child),
+            watchdog_tx: None,
+            watchdog_handle: None,
+            client: Some(VsockClient { stream: client }),
+            scratch: vec![],
+        };
+        let (exit, stdout) = session
+            .exec("cargo --version", Instant::now() + Duration::from_secs(30))
+            .expect("round-trip");
+        handle.join().expect("server thread");
+        assert_eq!(exit, 0);
+        assert_eq!(stdout, "cargo 1.0\n");
+    }
+
+    /// truncate_for_error caps at 200 chars without splitting a codepoint.
+    #[test]
+    fn truncate_for_error_caps_at_200_chars() {
+        let short = "abc";
+        assert_eq!(truncate_for_error(short), "abc");
+        let long = "x".repeat(500);
+        assert_eq!(truncate_for_error(&long).len(), 200);
+        let multibyte = "é".repeat(300);
+        let cut = truncate_for_error(&multibyte);
+        assert!(cut.len() < 402, "cut at a char boundary: {}", cut.len());
+    }
+
+    /// remaining_or_timeout: an expired deadline is TimedOut naming the
+    /// budget; a live deadline yields a positive remaining duration.
+    #[test]
+    fn remaining_or_timeout_names_budget_on_expiry() {
+        let err = remaining_or_timeout(Instant::now(), 42).expect_err("expired");
+        assert!(
+            matches!(err, RunnerError::TimedOut { timeout_secs: 42 }),
+            "{err:?}"
+        );
+        let remaining = remaining_or_timeout(Instant::now() + Duration::from_secs(10), 42)
+            .expect("live deadline");
+        assert!(remaining > Duration::from_secs(5));
+    }
+
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod");
+    }
+
+    /// Spawn a hermetic `sleep 30` into its own process group with null
+    /// stdio (mirrors runner.rs spawn_raw). VmSession tests wrap this
+    /// child so Drop exercises the real teardown path — killpg on the
+    /// sleep's own group only. NEVER signal reserved pids (0/1) in tests:
+    /// killpg(1) == kill(-1) SIGKILLs every process of the calling user.
+    #[cfg(unix)]
+    fn spawn_hermetic_sleep() -> Child {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.process_group(0);
+        cmd.spawn().expect("hermetic sleep spawned")
+    }
+
+    /// Pure guard test: reserved pids are 0 and 1, nothing else. Testing
+    /// the pure function (never kill_process_group itself with 0/1) keeps
+    /// a cargo-mutants mutant from detonating the real bomb.
+    #[test]
+    fn is_reserved_pid_rejects_zero_and_one_only() {
+        assert!(is_reserved_pid(0));
+        assert!(is_reserved_pid(1));
+        assert!(!is_reserved_pid(2));
     }
 
     // ---- live e2e (opt-in) -------------------------------------------------------

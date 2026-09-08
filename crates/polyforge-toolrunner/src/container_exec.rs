@@ -663,6 +663,9 @@ mod tests {
 
     #[test]
     fn absent_image_hard_error_names_the_image() {
+        // live_runtime probes PATH (ProdProbe) and resolve_image_ref spawns
+        // the runtime binary.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         let Some(runtime) = live_runtime() else {
             return;
         };
@@ -875,6 +878,8 @@ mod tests {
     /// `!x.trim().is_empty()` guards must treat "" and "   " as absent.
     #[test]
     fn from_environment_treats_blank_runtime_and_image_as_unset() {
+        // with_env mutates process-global POLYFORGE_SANDBOX_* vars.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         for blank in ["", "   "] {
             // Blank runtime + explicit image: the image env is honored
             // verbatim (trimmed), proving the runtime guard alone fell back.
@@ -925,6 +930,8 @@ mod tests {
     /// the actionable hard error (not a blank runtime name).
     #[test]
     fn from_environment_blank_runtime_without_probe_is_hard_error() {
+        // with_env mutates process-global POLYFORGE_SANDBOX_* vars.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         // Only meaningful when the probe finds nothing; with docker/podman
         // present the fallback succeeds, so assert the error shape only on
         // runtime-less hosts.

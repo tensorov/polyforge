@@ -820,6 +820,8 @@ mod tests {
     // dirty=false.
     #[test]
     fn test_git_state_from_reports_real_head() {
+        // temp_git_repo spawns bare-name `git` (PATH-resolved).
+        let _spawn_guard = GIT_CWD_LOCK.lock().unwrap();
         let dir = temp_git_repo("head");
         let gs = git_state_from(&dir);
         assert!(gs.git_repo_present);
@@ -832,6 +834,8 @@ mod tests {
     // T3: an uncommitted change flips the dirty marker.
     #[test]
     fn test_git_state_from_marks_dirty_worktree() {
+        // temp_git_repo spawns bare-name `git` (PATH-resolved).
+        let _spawn_guard = GIT_CWD_LOCK.lock().unwrap();
         let dir = temp_git_repo("dirty");
         std::fs::write(dir.join("a.txt"), "changed").unwrap();
         let gs = git_state_from(&dir);

@@ -582,6 +582,7 @@ impl Executor for GvisorExecutor {
 mod tests {
     use super::*;
     use crate::prober::ProbeSource;
+    use crate::PF_TOOL_TIMEOUT_SECS;
 
     /// Fixture implementing [`ProbeSource`] with plain fields so every route
     /// matrix cell is constructed explicitly.
@@ -934,6 +935,8 @@ mod tests {
 
     #[test]
     fn executor_digest_stable_and_route_sensitive() {
+        // The live executor_digest wrapper resolves runsc via PATH.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         let rootfs = temp_rootfs("digest");
         let mut cfg = test_config();
         cfg.rootfs = Some(rootfs.clone());
@@ -1037,6 +1040,8 @@ mod tests {
     /// sentinel env var scrubbed, outbound network dead.
     #[test]
     fn e2e_primary_sentinel_cwd_env_network() {
+        // require_gvisor_route probes PATH (ProdProbe) and may spawn docker.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         if !require_gvisor_route(GvisorRoute::ContainerRuntime) {
             return;
         }
@@ -1113,6 +1118,8 @@ mod tests {
     /// PF_GVISOR_TEST_ROOTFS=<abs path>.
     #[test]
     fn e2e_fallback_bundle_sentinel_exit_code() {
+        // find_runsc_binary resolves runsc via PATH.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         let Ok(rootfs) = std::env::var("PF_GVISOR_TEST_ROOTFS") else {
             skip("PF_GVISOR_TEST_ROOTFS not set; point it at a provisioned rootfs dir to run the OCI-bundle e2e");
             return;
@@ -1159,6 +1166,8 @@ mod tests {
     /// an in-sandbox tool version.
     #[test]
     fn e2e_executor_run_happy_path_when_gvisor_present() {
+        // require_gvisor_route probes PATH (ProdProbe) and may spawn docker.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         if !require_gvisor_route(GvisorRoute::ContainerRuntime) {
             return;
         }
@@ -1186,5 +1195,466 @@ mod tests {
             }
             Err(e) => panic!("unexpected error: {e:?}"),
         }
+    }
+
+    // ---- offline run-path coverage (fake runsc / fake docker) ---------------
+    //
+    // The e2e section above skip-cleans without a real runsc install; these
+    // tests drive the SAME production paths (sandboxed_output, run_oci_bundle,
+    // Executor::run) through hermetic shell-script binaries placed on PATH.
+    // The fake must match the REAL parsing contract: run_oci_bundle runs
+    // `runsc spec --bundle=<dir>` (must WRITE config.json and exit 0), then
+    // `runsc run --bundle=<dir> <id>` with piped stdio whose stdout and exit
+    // code become the RunOutput. PATH mutation + bare-name spawns hold
+    // TOOL_SPAWN_LOCK like every other env test in this crate.
+
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod");
+    }
+
+    /// Write a fake `runsc` (and optionally a fake `docker`) into `dir`.
+    ///
+    /// The script has three branches keyed on $1:
+    /// - `spec`: writes a minimal single-line OCI config.json into the
+    ///   --bundle dir (printf, no heredoc) and exits 0;
+    /// - `run`: cats the rendered config.json (proving the edit round-trip)
+    ///   and exits with the baked-in RUN_EXIT;
+    /// - anything else (e.g. `--version`): prints the baked-in version line.
+    ///
+    /// Every invocation appends "$@" to the REC file for argv assertions.
+    /// Built with .replace() placeholders — never format! — so the JSON
+    /// braces need no escaping.
+    fn write_fake_runsc(dir: &Path, rec: &Path, version_line: &str, run_exit: &str) {
+        let script = r#"#!/bin/sh
+echo "$@" >> "__REC__"
+case "$1" in
+  spec)
+    bundle_dir=$(echo "$2" | sed 's/^--bundle=//')
+    printf '%s' '{"root":{"path":"rootfs"},"process":{"args":["sh"],"cwd":"/"}}' > "$bundle_dir/config.json"
+    ;;
+  run)
+    bundle_dir=$(echo "$2" | sed 's/^--bundle=//')
+    cat "$bundle_dir/config.json"
+    exit "__RUN_EXIT__"
+    ;;
+  *)
+    echo "__VERSION__"
+    ;;
+esac
+"#
+        .replace("__REC__", &rec.display().to_string())
+        .replace("__RUN_EXIT__", run_exit)
+        .replace("__VERSION__", version_line);
+        let bin = dir.join("runsc");
+        std::fs::write(&bin, script).expect("fake runsc written");
+        make_executable(&bin);
+    }
+
+    fn write_fake_docker(dir: &Path, rec: &Path) {
+        let script = r#"#!/bin/sh
+echo "$@" >> "__REC__"
+echo "fake-docker-run-ok"
+"#
+        .replace("__REC__", &rec.display().to_string());
+        let bin = dir.join("docker");
+        std::fs::write(&bin, script).expect("fake docker written");
+        make_executable(&bin);
+    }
+
+    /// Temp dir for the fake binaries + the argv recording file.
+    fn fake_bin_dir(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "pf-gvisor-fakebin-{tag}-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::create_dir_all(&dir).expect("fake bin dir created");
+        let rec = dir.join("argv.log");
+        (dir, rec)
+    }
+
+    /// Prepend `dir` to PATH, returning the saved value for restoration.
+    fn push_path(dir: &Path) -> Option<String> {
+        let saved = std::env::var("PATH").ok();
+        let new_path = match &saved {
+            Some(v) => format!("{}:{v}", dir.display()),
+            None => dir.display().to_string(),
+        };
+        std::env::set_var("PATH", new_path);
+        saved
+    }
+
+    fn restore_path(saved: Option<String>) {
+        match saved {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
+    /// OCI-bundle route through a fake runsc: the run branch cats the
+    /// RENDERED config.json, so the stdout proves the full spec-edit
+    /// round-trip (argv strings, absolute rootfs, /work cwd) while the exit
+    /// code propagates verbatim.
+    #[test]
+    fn bundle_route_round_trips_rendered_config_and_exit_code() {
+        // Mutates PATH and spawns the fake runsc found through it.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (bin_dir, rec) = fake_bin_dir("roundtrip");
+        write_fake_runsc(&bin_dir, &rec, "runsc fake 20980101.0", "0");
+        let rootfs = temp_rootfs("roundtrip");
+        let mut cfg = test_config();
+        cfg.rootfs = Some(rootfs.clone());
+        let exec = GvisorExecutor::new(cfg);
+        let saved_path = push_path(&bin_dir);
+
+        let argv = vec!["cargo".to_string(), "--version".to_string()];
+        let out = exec
+            .sandboxed_output(GvisorRoute::OciBundle, &argv)
+            .expect("bundle run through fake runsc");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(out.status.code(), Some(0), "fake runsc exits 0");
+        assert!(stdout.contains(r#""cargo""#), "argv folded: {stdout}");
+        assert!(stdout.contains(r#""--version""#), "argv folded: {stdout}");
+        assert!(
+            stdout.contains(&rootfs.display().to_string()),
+            "absolute rootfs substituted: {stdout}"
+        );
+        assert!(stdout.contains(r#""cwd": "/work""#), "cwd pinned: {stdout}");
+        assert!(stdout.contains(r#""readonly":true"#) || stdout.contains(r#""ro""#));
+
+        // The spec and run invocations both recorded their argv.
+        let recorded = std::fs::read_to_string(&rec).expect("argv log");
+        assert!(
+            recorded.contains("--bundle="),
+            "spec/run argv recorded: {recorded}"
+        );
+
+        // Non-zero exit propagates verbatim through the same path.
+        let (bin_dir2, rec2) = fake_bin_dir("exit7");
+        write_fake_runsc(&bin_dir2, &rec2, "runsc fake 20980101.0", "7");
+        let mut cfg2 = test_config();
+        cfg2.rootfs = Some(rootfs.clone());
+        let exec2 = GvisorExecutor::new(cfg2);
+        let saved_path2 = push_path(&bin_dir2);
+        let out2 = exec2
+            .sandboxed_output(GvisorRoute::OciBundle, &["true".to_string()])
+            .expect("run completes; exit code is data");
+        assert_eq!(out2.status.code(), Some(7), "exit code propagates verbatim");
+
+        restore_path(saved_path2);
+        restore_path(saved_path);
+        let _ = std::fs::remove_dir_all(&bin_dir2);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+        let _ = std::fs::remove_dir_all(&rootfs);
+    }
+
+    /// The wall-clock watchdog fires on a sleeping fake runsc: with
+    /// PF_TOOL_TIMEOUT_SECS=1 the `run` branch sleeps past the budget and
+    /// the run surfaces TimedOut naming the budget.
+    #[test]
+    fn bundle_route_timeout_kills_sleeping_runsc() {
+        // Mutates PATH and PF_TOOL_TIMEOUT_SECS; spawns the fake runsc.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (bin_dir, rec) = fake_bin_dir("timeout");
+        // run branch sleeps 30 (far past the 1s budget), then would exit 0.
+        let script = r#"#!/bin/sh
+echo "$@" >> "__REC__"
+case "$1" in
+  spec)
+    bundle_dir=$(echo "$2" | sed 's/^--bundle=//')
+    printf '%s' '{"root":{"path":"rootfs"},"process":{"args":["sh"],"cwd":"/"}}' > "$bundle_dir/config.json"
+    ;;
+  run)
+    sleep 30
+    ;;
+  *)
+    echo "runsc fake 20980101.0"
+    ;;
+esac
+"#
+        .replace("__REC__", &rec.display().to_string());
+        let bin = bin_dir.join("runsc");
+        std::fs::write(&bin, script).expect("sleeping fake runsc written");
+        make_executable(&bin);
+
+        let rootfs = temp_rootfs("timeout");
+        let mut cfg = test_config();
+        cfg.rootfs = Some(rootfs.clone());
+        let exec = GvisorExecutor::new(cfg);
+        let saved_path = push_path(&bin_dir);
+        let saved_timeout = std::env::var(PF_TOOL_TIMEOUT_SECS).ok();
+        std::env::set_var(PF_TOOL_TIMEOUT_SECS, "1");
+
+        let err = exec
+            .sandboxed_output(GvisorRoute::OciBundle, &["sleep".to_string()])
+            .expect_err("sleeping run must hit the wall-clock budget");
+        assert!(
+            matches!(err, RunnerError::TimedOut { timeout_secs: 1 }),
+            "budget must surface as TimedOut(1), got: {err:?}"
+        );
+
+        match saved_timeout {
+            Some(v) => std::env::set_var(PF_TOOL_TIMEOUT_SECS, v),
+            None => std::env::remove_var(PF_TOOL_TIMEOUT_SECS),
+        }
+        restore_path(saved_path);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+        let _ = std::fs::remove_dir_all(&rootfs);
+    }
+
+    /// A fake runsc whose `spec` branch fails surfaces ToolFailed naming
+    /// the spec step's exit code and stderr.
+    #[test]
+    fn bundle_route_spec_failure_is_tool_failed() {
+        // Mutates PATH and spawns the fake runsc found through it.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (bin_dir, rec) = fake_bin_dir("specfail");
+        let script = r#"#!/bin/sh
+echo "$@" >> "__REC__"
+case "$1" in
+  spec)
+    echo "spec exploded" >&2
+    exit 9
+    ;;
+  *)
+    echo "runsc fake 20980101.0"
+    ;;
+esac
+"#
+        .replace("__REC__", &rec.display().to_string());
+        let bin = bin_dir.join("runsc");
+        std::fs::write(&bin, script).expect("spec-failing fake runsc written");
+        make_executable(&bin);
+
+        let rootfs = temp_rootfs("specfail");
+        let mut cfg = test_config();
+        cfg.rootfs = Some(rootfs.clone());
+        let exec = GvisorExecutor::new(cfg);
+        let saved_path = push_path(&bin_dir);
+
+        let err = exec
+            .sandboxed_output(GvisorRoute::OciBundle, &["true".to_string()])
+            .expect_err("spec failure must surface");
+        match err {
+            RunnerError::ToolFailed { exit_code, stderr } => {
+                assert_eq!(exit_code, 9, "spec exit code propagates: {stderr}");
+                assert!(stderr.contains("spec exploded"), "stderr folded: {stderr}");
+            }
+            other => panic!("expected ToolFailed, got {other:?}"),
+        }
+
+        restore_path(saved_path);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+        let _ = std::fs::remove_dir_all(&rootfs);
+    }
+
+    /// Without any runsc reachable (PATH narrowed to an empty dir and no
+    /// well-known install), the bundle route fails closed naming runsc.
+    /// On a host with a real /usr/local/bin or /usr/bin runsc the route
+    /// legitimately succeeds, so that arm asserts the happy shape instead
+    /// (mirrors the fc_exec well-known-install conditional).
+    #[test]
+    fn bundle_route_without_runsc_fails_closed() {
+        // Mutates PATH; the route probes it for the runsc binary.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (empty_dir, _rec) = fake_bin_dir("norunsc");
+        let rootfs = temp_rootfs("norunsc");
+        let mut cfg = test_config();
+        cfg.rootfs = Some(rootfs.clone());
+        let exec = GvisorExecutor::new(cfg);
+        let saved_path = push_path(&empty_dir);
+
+        let result = exec.sandboxed_output(GvisorRoute::OciBundle, &["true".to_string()]);
+
+        restore_path(saved_path);
+        let _ = std::fs::remove_dir_all(&empty_dir);
+        let _ = std::fs::remove_dir_all(&rootfs);
+
+        let well_known_runsc =
+            Path::new("/usr/local/bin/runsc").exists() || Path::new("/usr/bin/runsc").exists();
+        if !well_known_runsc {
+            let err = result.expect_err("no runsc anywhere must fail closed");
+            assert!(
+                matches!(&err, RunnerError::Spawn(m) if m.contains("runsc binary not found")),
+                "error names the missing prerequisite: {err:?}"
+            );
+        } else {
+            // A real install answers from the well-known dir: the run either
+            // succeeds or reports an environment gap, never a silent fallback.
+            match result {
+                Ok(out) => assert!(out.status.code().is_some()),
+                Err(RunnerError::Spawn(_)) | Err(RunnerError::ToolFailed { .. }) => {}
+                Err(e) => panic!("unexpected error shape: {e:?}"),
+            }
+        }
+    }
+
+    /// The bundle route requires a provisioned rootfs BEFORE anything spawns:
+    /// a config without one fails closed naming the prerequisite. A fake
+    /// runsc on PATH satisfies the binary probe so the rootfs check is the
+    /// one that fires (on this host no real runsc exists, but the fake makes
+    /// the test hermetic regardless).
+    #[test]
+    fn bundle_route_without_rootfs_names_prerequisite() {
+        // Mutates PATH; the route probes it for runsc before the rootfs check.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (bin_dir, rec) = fake_bin_dir("norootfs");
+        write_fake_runsc(&bin_dir, &rec, "runsc fake 20980101.0", "0");
+        let exec = GvisorExecutor::new(test_config()); // rootfs: None
+        let saved_path = push_path(&bin_dir);
+        let err = exec
+            .sandboxed_output(GvisorRoute::OciBundle, &["true".to_string()])
+            .expect_err("missing rootfs must fail closed");
+        restore_path(saved_path);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+        assert!(
+            matches!(&err, RunnerError::Spawn(m) if m.contains("requires a provisioned rootfs")),
+            "error names the rootfs prerequisite: {err:?}"
+        );
+    }
+
+    /// Primary route through a fake docker: the full `docker run --rm
+    /// --runtime=... --network none ... <image> <argv>` command executes the
+    /// fake, whose stdout becomes the run output.
+    #[test]
+    fn primary_route_round_trips_through_fake_docker() {
+        // Mutates PATH and spawns the fake docker found through it.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (bin_dir, rec) = fake_bin_dir("primary");
+        write_fake_docker(&bin_dir, &rec);
+        let exec = GvisorExecutor::new(test_config());
+        let saved_path = push_path(&bin_dir);
+
+        let argv = vec!["cargo".to_string(), "--version".to_string()];
+        let out = exec
+            .sandboxed_output(GvisorRoute::ContainerRuntime, &argv)
+            .expect("primary run through fake docker");
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "fake-docker-run-ok"
+        );
+
+        // The recorded argv proves the contractual docker command shape.
+        let recorded = std::fs::read_to_string(&rec).expect("argv log");
+        for expected in [
+            "run",
+            "--rm",
+            "--runtime=runsc-nonet",
+            "--network",
+            "none",
+            "-v",
+            "/repo:/work:ro",
+            "-w",
+            "/work",
+        ] {
+            assert!(
+                recorded.contains(expected),
+                "argv must contain {expected}: {recorded}"
+            );
+        }
+        assert!(
+            recorded.contains(&pinned_image()),
+            "digest-pinned image leads the payload: {recorded}"
+        );
+
+        restore_path(saved_path);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+    }
+
+    /// Full Executor::run happy path offline: fake docker + fake runsc on
+    /// PATH make route selection pick the primary route, the in-sandbox
+    /// version probe answers through the fake runsc, and the RunOutput
+    /// carries the complete attestation shape.
+    #[test]
+    fn executor_run_happy_path_through_fake_runtimes() {
+        // Mutates PATH; route selection probes it and spawns both fakes.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (bin_dir, rec) = fake_bin_dir("fullrun");
+        write_fake_runsc(&bin_dir, &rec, "runsc fake 20980101.0", "0");
+        write_fake_docker(&bin_dir, &rec);
+        let exec = GvisorExecutor::new(test_config());
+        let saved_path = push_path(&bin_dir);
+
+        let t = lookup("cargo --version").expect("allowlisted");
+        let out = exec.run(&t, &[]).expect("full run through fakes");
+
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "fake-docker-run-ok"
+        );
+        assert_eq!(out.stdout_hash.len(), 64);
+        // The version probe runs INSIDE the sandbox through the selected
+        // route (ContainerRuntime here), so the fake docker's stdout IS the
+        // recorded tool_version — runsc --version is only read by
+        // executor_digest, never by run().
+        assert_eq!(out.tool_version, "fake-docker-run-ok");
+        assert!(!out.env_fingerprint.is_empty());
+        assert!(out.command.starts_with("cargo"));
+
+        restore_path(saved_path);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+    }
+
+    /// executor_digest reads the runsc version from the binary on PATH: a
+    /// fake runsc answering `--version` yields a digest that differs from
+    /// the unknown-runsc fallback for the same route.
+    #[test]
+    fn executor_digest_reads_fake_runsc_version() {
+        // Mutates PATH; executor_digest resolves runsc through it.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (bin_dir, rec) = fake_bin_dir("digest");
+        write_fake_runsc(&bin_dir, &rec, "runsc fake 20980101.0", "0");
+        let exec = GvisorExecutor::new(test_config());
+        let saved_path = push_path(&bin_dir);
+
+        let with_fake = exec
+            .executor_digest(GvisorRoute::ContainerRuntime)
+            .expect("digest through fake runsc");
+
+        restore_path(saved_path);
+        let _ = std::fs::remove_dir_all(&bin_dir);
+
+        assert_eq!(with_fake.len(), 64);
+        assert!(
+            with_fake.bytes().all(|b| b.is_ascii_hexdigit()),
+            "digest is sha256 hex: {with_fake}"
+        );
+        let unknown = exec
+            .executor_digest_with("unknown-runsc", GvisorRoute::ContainerRuntime)
+            .expect("hermetic digest");
+        assert_ne!(
+            with_fake, unknown,
+            "a real version answer must move the digest"
+        );
+    }
+
+    /// required_rootfs rejects a rootfs path that exists but is a FILE,
+    /// not a directory (structural_config_json surfaces the same error on
+    /// the bundle route). Pure filesystem check — no PATH, no spawn.
+    #[test]
+    fn structural_config_rejects_rootfs_that_is_not_a_directory() {
+        let file_rootfs = std::env::temp_dir().join(format!(
+            "pf-gvisor-notdir-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        std::fs::write(&file_rootfs, b"i am a file").expect("rootfs file written");
+        let mut cfg = test_config();
+        cfg.rootfs = Some(file_rootfs.clone());
+        let exec = GvisorExecutor::new(cfg);
+
+        let err = exec
+            .structural_config_json(GvisorRoute::OciBundle)
+            .expect_err("file rootfs must be rejected");
+        assert!(
+            matches!(&err, RunnerError::Spawn(m) if m.contains("is not a directory")),
+            "error names the not-a-directory rootfs: {err:?}"
+        );
+        let _ = std::fs::remove_file(&file_rootfs);
     }
 }

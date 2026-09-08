@@ -1342,6 +1342,9 @@ mod tests {
 
     #[test]
     fn test_env_fingerprint_changes_with_tool_version() {
+        // env_fingerprint reads process-global env (names + PATH): hold the
+        // crate lock so env-mutating tests cannot interleave.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let a = env_fingerprint("cargo-1.95.0");
         let b = env_fingerprint("cargo-1.96.0");
         assert_ne!(a, b);
@@ -1349,6 +1352,9 @@ mod tests {
 
     #[test]
     fn test_env_fingerprint_stable_across_runs() {
+        // Same hazard: the base hash folds env names + PATH; a mid-test PATH
+        // flip by another test breaks a==b.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let a = env_fingerprint("cargo-1.95.0");
         let b = env_fingerprint("cargo-1.95.0");
         assert_eq!(a, b);
@@ -1647,6 +1653,8 @@ mod tests {
     /// `none` and nothing is invented.
     #[test]
     fn test_env_fingerprint_no_lockfiles_up_tree_renders_none() {
+        // env_fingerprint_at reads process-global env (names + PATH).
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!("pf-nolocks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("temp dir created");
@@ -1660,6 +1668,8 @@ mod tests {
 
     #[test]
     fn test_env_fingerprint_reads_real_workspace_lockfile() {
+        // env_fingerprint reads process-global env (names + PATH).
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let fp = env_fingerprint("cargo-1.95.0");
         let tail = tail_section(&fp, "cargo.lock");
         assert_eq!(tail.len(), 64, "real Cargo.lock sha256, not `none`: {fp}");
@@ -1686,6 +1696,8 @@ mod tests {
     /// scanning (Python/TS repositories without Cargo.toml are first-class).
     #[test]
     fn test_env_fingerprint_discovers_uv_lock_in_non_cargo_repo() {
+        // env_fingerprint_at reads process-global env (names + PATH).
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!("pf-noncargo-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("temp dir created");
@@ -1709,6 +1721,8 @@ mod tests {
     /// literal `none`.
     #[test]
     fn test_env_fingerprint_discovers_uv_lock_under_workspace_root() {
+        // env_fingerprint_at reads process-global env (names + PATH).
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let tmp = std::env::temp_dir().join(format!("pf-uvroot-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("temp dir created");
@@ -1815,6 +1829,8 @@ mod tests {
 
     #[test]
     fn test_hanging_tool_times_out() {
+        // spawn_raw resolves a bare-name binary via PATH.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let child = spawn_raw(&["sleep", "6"]);
         let start = std::time::Instant::now();
         let err = wait_with_timeout(child, Duration::from_millis(500)).unwrap_err();
@@ -1831,6 +1847,8 @@ mod tests {
 
     #[test]
     fn test_timeout_kills_process_tree() {
+        // spawn_raw resolves a bare-name binary via PATH.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         // The direct child `sh` waits on a background `sleep` that inherits the
         // output pipes; without a process-group kill the pipes would stay open
         // and wait_with_timeout would block past the deadline.
@@ -1875,6 +1893,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_kill_process_group_fallback_kills_child() {
+        // Command::new("sleep") resolves a bare-name binary via PATH.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let mut cmd = Command::new("sleep");
         cmd.arg("30");
         cmd.stdin(Stdio::null())
@@ -1898,6 +1918,8 @@ mod tests {
 
     #[test]
     fn test_wait_with_timeout_normal_completion() {
+        // spawn_raw resolves a bare-name binary via PATH.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let child = spawn_raw(&["printf", "hello"]);
         let out = wait_with_timeout(child, Duration::from_secs(10)).unwrap();
         assert_eq!(out.status.code(), Some(0));
@@ -1945,6 +1967,8 @@ mod tests {
     // hardcoded constant.
     #[test]
     fn test_tool_version_is_real_output() {
+        // Spawns a child process; serialized with env-mutating tests.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let v = tool_version(&PathBuf::from("/bin/ls"));
         assert!(!v.is_empty(), "ls --version must produce output");
         assert_ne!(v, "xyzzy", "tool_version must not be a constant");
@@ -1954,6 +1978,8 @@ mod tests {
     // still resolve to the `unknown-` fallback, not to its stdout.
     #[test]
     fn test_tool_version_falls_back_for_failing_tool() {
+        // Spawns a child process; serialized with env-mutating tests.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let v = tool_version(&PathBuf::from("/bin/false"));
         assert!(
             v.starts_with("unknown-"),
@@ -1965,6 +1991,8 @@ mod tests {
     // must resolve to its real version, never to the `unknown-` fallback.
     #[test]
     fn test_tool_version_reports_successful_tool_version() {
+        // Spawns a child process; serialized with env-mutating tests.
+        let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
         let v = tool_version(&PathBuf::from("/bin/ls"));
         assert!(!v.is_empty(), "ls --version must produce output");
         assert!(
@@ -2153,6 +2181,9 @@ mod tests {
 
         #[test]
         fn sandbox_kind_dispatches_to_mock_backend() {
+            // container_backend_took_over() probes PATH (and may spawn a
+            // bare-name docker info).
+            let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
             assert_eq!(executor_for_kind(ExecutorKind::Process).label(), "process");
             if container_backend_took_over() {
                 assert_eq!(
@@ -2170,6 +2201,9 @@ mod tests {
 
         #[test]
         fn executor_digest_follows_kind_not_globals() {
+            // container_backend_took_over() probes PATH (and may spawn a
+            // bare-name docker info).
+            let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
             assert_eq!(executor_digest_for_kind(ExecutorKind::Process), None);
             if container_backend_took_over() {
                 // The container digest is environment-derived (image at
@@ -2263,6 +2297,9 @@ mod tests {
         /// for Process).
         #[test]
         fn executor_digest_is_byte_exact_pinned_literal() {
+            // container_backend_took_over() probes PATH (and may spawn a
+            // bare-name docker info).
+            let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
             if container_backend_took_over() {
                 // The container digest resolves the sandbox image at run
                 // time; an unprovisioned image yields None by contract, so
@@ -2290,6 +2327,9 @@ mod tests {
         /// string and differ from the empty string and the other label.
         #[test]
         fn backend_labels_are_byte_exact_and_mutually_distinct() {
+            // container_backend_took_over() probes PATH (and may spawn a
+            // bare-name docker info).
+            let _spawn_guard = TOOL_SPAWN_LOCK.lock().unwrap();
             let process = executor_for_kind(ExecutorKind::Process).label();
             assert_eq!(process, "process");
             assert_ne!(process, "");

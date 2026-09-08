@@ -153,6 +153,8 @@ mod tests {
     /// the allowlist (PATH only), which subsumes any single-sentinel check.
     #[test]
     fn sentinel_env_var_is_hidden_from_child() {
+        // scrubbed_command reads process-global PATH for the child env.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         let hidden = run_scrubbed("/bin/sh", &["-c", "printenv CARGO_MANIFEST_DIR"]);
         assert_eq!(
             String::from_utf8_lossy(&hidden.stdout).trim(),
@@ -184,6 +186,8 @@ mod tests {
 
     #[test]
     fn child_cwd_is_fresh_temp_dir_under_temp_root() {
+        // scrubbed_command reads process-global PATH for the child env.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         let pwd = run_scrubbed("/bin/sh", &["-c", "pwd"]);
         let cwd = String::from_utf8_lossy(&pwd.stdout).trim().to_string();
         let root = std::env::temp_dir();
@@ -202,6 +206,8 @@ mod tests {
 
     #[test]
     fn failing_child_propagates_exit_code_unchanged() {
+        // scrubbed_command reads process-global PATH for the child env.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         let out = run_scrubbed("/bin/false", &[]);
         assert_eq!(out.status.code(), Some(1));
     }
@@ -219,6 +225,8 @@ mod tests {
     /// produces the full RunOutput shape.
     #[test]
     fn allowlisted_tool_runs_happy_in_mock() {
+        // Spawns bare-name cargo (PATH-resolved) and folds env_fingerprint.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         let t = lookup("cargo --version").expect("tool on allowlist");
         let out = MockSandboxExecutor.run(&t, &[]).expect("mock run");
         assert_eq!(out.exit_code, 0);
@@ -233,6 +241,8 @@ mod tests {
     /// propagates its non-zero outcome unchanged (Ok(RunOutput), real code).
     #[test]
     fn failing_tool_propagates_non_zero_unchanged() {
+        // Spawns bare-name cargo (PATH-resolved) and folds env_fingerprint.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
         let t = lookup("cargo build").expect("tool on allowlist");
         let out = MockSandboxExecutor
             .run(&t, &["--definitely-not-a-flag".to_string()])
