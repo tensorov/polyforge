@@ -1003,6 +1003,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hermetic_path_push_and_restore_round_trip() {
+        // push/restore mutate the process-global PATH.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, _rec) = hermetic_bin_dir("path-rt");
+        let before = std::env::var("PATH").expect("PATH set in a cargo test run");
+        let saved = hermetic_push_path(&dir);
+        assert_eq!(saved.as_deref(), Some(before.as_str()));
+        let pushed = std::env::var("PATH").expect("PATH pushed");
+        assert!(
+            pushed.starts_with(&format!("{}/", dir.display()))
+                || pushed.starts_with(&dir.display().to_string()),
+            "push must prepend the dir: {pushed}"
+        );
+        hermetic_restore_path(saved);
+        assert_eq!(
+            std::env::var("PATH").expect("PATH restored"),
+            before,
+            "restore must put the original PATH back byte-for-byte"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Write a fake container-runtime CLI named `runtime` into `dir`.
     ///
     /// Branches keyed on $1, mirroring the real argv contracts:
