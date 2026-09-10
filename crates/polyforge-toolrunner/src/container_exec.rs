@@ -438,6 +438,7 @@ pub(crate) fn container_backend_active() -> bool {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::PF_TOOL_TIMEOUT_SECS;
     use std::time::Duration;
 
     // ---- pure command-shape assertions (no runtime required) ----
@@ -949,5 +950,717 @@ mod tests {
                 "error must name the fix: {err:?}"
             );
         });
+    }
+
+    // ---- hermetic fake-runtime suite (host-independent coverage) ------------
+    //
+    // The live tests above skip-clean on image-less hosts (CI runners have
+    // docker but no local images), which starves this file's line coverage
+    // there. The suite below drives the SAME production paths through fake
+    // runtime CLIs on PATH (the gvisor fake-runsc pattern): every scenario
+    // is deterministic on any host. All of them mutate PATH or read env, so
+    // each holds TOOL_SPAWN_LOCK for its whole body.
+
+    fn hermetic_tag(tag: &str) -> String {
+        format!(
+            "{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )
+    }
+
+    fn hermetic_bin_dir(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("pf-ce-fakebin-{}", hermetic_tag(tag)));
+        std::fs::create_dir_all(&dir).expect("fake bin dir created");
+        let rec = dir.join("argv.log");
+        (dir, rec)
+    }
+
+    fn hermetic_make_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).expect("chmod");
+    }
+
+    fn hermetic_push_path(dir: &std::path::Path) -> Option<String> {
+        let saved = std::env::var("PATH").ok();
+        let new_path = match &saved {
+            Some(v) => format!("{}:{v}", dir.display()),
+            None => dir.display().to_string(),
+        };
+        std::env::set_var("PATH", new_path);
+        saved
+    }
+
+    fn hermetic_restore_path(saved: Option<String>) {
+        match saved {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+
+    /// Write a fake container-runtime CLI named `runtime` into `dir`.
+    ///
+    /// Branches keyed on $1, mirroring the real argv contracts:
+    /// - `image` (resolve_image_ref: `image inspect --format <tpl> <ref>`):
+    ///   sub-branch on $4 — the RepoDigests template prints REPO_DIGEST and
+    ///   exits REPO_EXIT, the Id template prints LOCAL_ID and exits ID_EXIT;
+    /// - `run` with `-w` among the args (the attestation run): prints
+    ///   RUN_SENTINEL and exits 0;
+    /// - `run` without `-w` (the in-container version probe): prints
+    ///   VERSION_LINE and exits 0.
+    ///
+    /// Every invocation appends "$@" to the REC file for argv assertions.
+    /// Built with .replace() placeholders — never format! — so the template
+    /// braces need no escaping.
+    #[allow(clippy::too_many_arguments)]
+    fn write_fake_docker(
+        dir: &std::path::Path,
+        runtime: &str,
+        rec: &std::path::Path,
+        repo_digest: &str,
+        repo_exit: &str,
+        local_id: &str,
+        id_exit: &str,
+        version_line: &str,
+        run_sentinel: &str,
+    ) {
+        let script = r#"#!/bin/sh
+echo "$@" >> "__REC__"
+case "$1" in
+  image)
+    case "$4" in
+      "{{index .RepoDigests 0}}")
+        printf '%s\n' "__REPO_DIGEST__"
+        exit "__REPO_EXIT__"
+        ;;
+      "{{.Id}}")
+        printf '%s\n' "__LOCAL_ID__"
+        exit "__ID_EXIT__"
+        ;;
+    esac
+    exit 1
+    ;;
+  run)
+    saw_w=0
+    for a in "$@"; do
+      if [ "$a" = "-w" ]; then
+        saw_w=1
+      fi
+    done
+    if [ "$saw_w" = "1" ]; then
+      echo "__RUN_SENTINEL__"
+    else
+      printf '%s' "__VERSION_LINE__"
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+"#
+        .replace("__REC__", &rec.display().to_string())
+        .replace("__REPO_DIGEST__", repo_digest)
+        .replace("__REPO_EXIT__", repo_exit)
+        .replace("__LOCAL_ID__", local_id)
+        .replace("__ID_EXIT__", id_exit)
+        .replace("__VERSION_LINE__", version_line)
+        .replace("__RUN_SENTINEL__", run_sentinel);
+        let bin = dir.join(runtime);
+        std::fs::write(&bin, script).expect("fake runtime written");
+        hermetic_make_executable(&bin);
+    }
+
+    fn rec_lines(rec: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(rec)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn hermetic_resolve_image_ref_success_and_cache() {
+        // resolve_image_ref spawns the runtime binary (bare name, PATH).
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, rec) = hermetic_bin_dir("resolve-ok");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("ro"));
+        let image = format!("pf-hermetic-img-{}:latest", hermetic_tag("ro"));
+        let digest = format!("reg.example.com/pf@sha256:{}a", "1".repeat(63));
+        write_fake_docker(
+            &dir,
+            &runtime,
+            &rec,
+            &digest,
+            "0",
+            "sha256:unused",
+            "0",
+            "unused-version",
+            "unused-sentinel",
+        );
+        let saved = hermetic_push_path(&dir);
+
+        let pinned = resolve_image_ref(&runtime, &image).expect("resolve via fake");
+        assert_eq!(pinned, digest, "verbatim @-digest");
+        let lines = rec_lines(&rec);
+        assert_eq!(lines.len(), 1, "exactly one inspect spawn: {lines:?}");
+        let expected = "image inspect --format {{index .RepoDigests 0}} ".to_string() + &image;
+        assert_eq!(lines[0], expected, "exact inspect argv pinned");
+
+        // Second resolve with the same key must hit the cache: no new spawn.
+        let again = resolve_image_ref(&runtime, &image).expect("cached resolve");
+        assert_eq!(again, digest);
+        assert_eq!(rec_lines(&rec).len(), 1, "cache hit must not spawn");
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_resolve_image_ref_failure_names_image() {
+        // resolve_image_ref spawns the runtime binary (bare name, PATH).
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, rec) = hermetic_bin_dir("resolve-fail");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("rf"));
+        let image = format!("pf-hermetic-img-{}:v9", hermetic_tag("rf"));
+        write_fake_docker(
+            &dir,
+            &runtime,
+            &rec,
+            "ignored",
+            "1",
+            "ignored",
+            "1",
+            "unused-version",
+            "unused-sentinel",
+        );
+        let saved = hermetic_push_path(&dir);
+
+        let err = resolve_image_ref(&runtime, &image).unwrap_err();
+        match err {
+            RunnerError::Spawn(msg) => {
+                assert!(msg.contains(&image), "error must NAME the image: {msg}");
+                assert!(
+                    msg.contains("unavailable"),
+                    "error must state unavailability: {msg}"
+                );
+            }
+            other => panic!("expected Spawn error naming the image, got {other:?}"),
+        }
+        assert_eq!(
+            rec_lines(&rec).len(),
+            2,
+            "both templates tried: {:?}",
+            rec_lines(&rec)
+        );
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_resolve_image_ref_id_fallback_formats_digest() {
+        // resolve_image_ref spawns the runtime binary (bare name, PATH).
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, rec) = hermetic_bin_dir("id-fallback");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("id"));
+        let image = format!("pf-hermetic-img-{}:latest", hermetic_tag("id"));
+        let bare_id = format!("sha256:{}c", "2".repeat(63));
+        // RepoDigests prints an empty line (exit 0) -> empty -> continue;
+        // the Id template answers a bare digest -> format! {image}@{id}.
+        write_fake_docker(
+            &dir,
+            &runtime,
+            &rec,
+            "",
+            "0",
+            &bare_id,
+            "0",
+            "unused-version",
+            "unused-sentinel",
+        );
+        let saved = hermetic_push_path(&dir);
+
+        let pinned = resolve_image_ref(&runtime, &image).expect("Id fallback resolve");
+        assert_eq!(
+            pinned,
+            format!("{image}@{bare_id}"),
+            "bare id must be formatted"
+        );
+        let lines = rec_lines(&rec);
+        assert_eq!(
+            lines.len(),
+            2,
+            "RepoDigests skipped, Id answered: {lines:?}"
+        );
+        assert!(
+            lines[1].contains("{{.Id}}"),
+            "second template is .Id: {lines:?}"
+        );
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_current_run_digest_resolves_and_hashes() {
+        // current_run_digest resolves the image via PATH and hashes the cwd
+        // tree (reads env + spawns the runtime binary).
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, rec) = hermetic_bin_dir("digest");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("dg"));
+        let image = format!("pf-hermetic-img-{}:latest", hermetic_tag("dg"));
+        let digest = format!("reg.example.com/pf@sha256:{}i", "7".repeat(63));
+        write_fake_docker(
+            &dir,
+            &runtime,
+            &rec,
+            &digest,
+            "0",
+            "sha256:unused",
+            "0",
+            "unused-version",
+            "unused-sentinel",
+        );
+        let saved = hermetic_push_path(&dir);
+
+        let d1 = current_run_digest(&runtime, &image).expect("digest resolves via fake");
+        assert_eq!(d1.len(), 64);
+        assert!(d1.bytes().all(|b| b.is_ascii_hexdigit()));
+        // Deterministic over unchanged inputs: the resolve cache pins the
+        // digest and the tree hash is stable within the process.
+        let d2 = current_run_digest(&runtime, &image).expect("second digest");
+        assert_eq!(d1, d2, "digest stable across calls");
+        // A pre-pinned ref bypasses the resolve cache with a different key
+        // but must still produce a valid digest.
+        let pinned = format!("pf-other@sha256:{}j", "8".repeat(63));
+        let d3 = current_run_digest(&runtime, &pinned).expect("pinned digest");
+        assert_ne!(d1, d3, "image identity must move the digest");
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_run_happy_path_and_version_cache() {
+        // run() spawns the runtime, reads PATH, and folds env_fingerprint.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, rec) = hermetic_bin_dir("run-happy");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("rh"));
+        let image = format!("pf-hermetic-img-{}:latest", hermetic_tag("rh"));
+        let digest = format!("reg.example.com/pf@sha256:{}d", "3".repeat(63));
+        let sentinel = format!("fake-container-run-ok-{}", hermetic_tag("rh"));
+        let version = format!("fake-cargo 9.9.9-{}", hermetic_tag("rh"));
+        write_fake_docker(
+            &dir,
+            &runtime,
+            &rec,
+            &digest,
+            "0",
+            "sha256:unused",
+            "0",
+            &version,
+            &sentinel,
+        );
+        let saved = hermetic_push_path(&dir);
+
+        let executor = ContainerExecutor::new(runtime.clone(), image.clone());
+        let t = lookup("cargo --version").expect("tool on allowlist");
+        let out = executor.run(&t, &[]).expect("hermetic container run");
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), sentinel);
+        assert_eq!(out.stdout_hash.len(), 64);
+        assert_eq!(
+            out.tool_version, version,
+            "version probe ran through the fake"
+        );
+        assert!(!out.env_fingerprint.is_empty());
+        assert!(out.command.starts_with("cargo"));
+
+        let lines = rec_lines(&rec);
+        assert_eq!(
+            lines.len(),
+            3,
+            "inspect + main run + version probe: {lines:?}"
+        );
+        assert_eq!(
+            lines[0],
+            "image inspect --format {{index .RepoDigests 0}} ".to_string() + &image
+        );
+        assert!(
+            lines[1].contains(" -w /work "),
+            "main run pins the workdir: {lines:?}"
+        );
+        assert!(
+            lines[1].contains(&digest),
+            "main run uses the pinned digest: {lines:?}"
+        );
+        assert!(
+            lines[1].contains("cargo --version"),
+            "main run argv ends with the tool: {lines:?}"
+        );
+        assert!(
+            lines[2].contains("cargo --version"),
+            "version probe runs the tool: {lines:?}"
+        );
+        assert!(
+            !lines[2].contains(" -w "),
+            "version probe has no workdir mount: {lines:?}"
+        );
+
+        // Second run: both caches hit — only the main run spawns again.
+        let out2 = executor.run(&t, &[]).expect("second hermetic run");
+        assert_eq!(out2.tool_version, version, "version cache hit");
+        let lines2 = rec_lines(&rec);
+        assert_eq!(lines2.len(), 4, "only the main run re-spawned: {lines2:?}");
+        assert_eq!(
+            lines2
+                .iter()
+                .filter(|l| l.starts_with("image inspect"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            lines2.iter().filter(|l| l.contains(" -w /work ")).count(),
+            2
+        );
+
+        // A DIFFERENT tool through the same executor: fresh version-cache
+        // key (image|bin), so its probe spawns once and then caches.
+        let rustc = lookup("rustc --version").expect("rustc on allowlist");
+        let out3 = executor.run(&rustc, &[]).expect("rustc run");
+        assert_eq!(out3.exit_code, 0);
+        assert_eq!(out3.tool_version, version, "same fake answers rustc too");
+        assert!(out3.command.starts_with("rustc"));
+        let lines3 = rec_lines(&rec);
+        // +1 main run +1 rustc version probe; the cargo version stays cached.
+        assert_eq!(lines3.len(), 6, "rustc probe spawned once: {lines3:?}");
+        assert_eq!(
+            lines3.iter().filter(|l| l.contains(" -w /work ")).count(),
+            3
+        );
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_sentinels_match_mock_suite_through_fake_runtime() {
+        // run_in_container-style probes spawn the runtime and read PATH.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, rec) = hermetic_bin_dir("sentinels");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("st"));
+        let image = format!("pf-hermetic-img-{}:latest", hermetic_tag("st"));
+        let digest = format!("reg.example.com/pf@sha256:{}k", "9".repeat(63));
+        write_fake_docker(
+            &dir,
+            &runtime,
+            &rec,
+            &digest,
+            "0",
+            "sha256:unused",
+            "0",
+            "fake-version",
+            "fake-sentinel-out",
+        );
+        let saved = hermetic_push_path(&dir);
+
+        let executor = ContainerExecutor::new(runtime, image);
+        // The fake answers every run with the same sentinel line, proving
+        // the executor's argv reaches the runtime and stdout round-trips.
+        let t = lookup("cargo --version").expect("tool on allowlist");
+        let out = executor.run(&t, &[]).expect("sentinel run");
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "fake-sentinel-out"
+        );
+
+        // The full argv posture is pinned by the REC: network none, the
+        // read-only checkout mount, the workdir, and the PATH allowlist.
+        let lines = rec_lines(&rec);
+        let main_runs: Vec<&String> = lines.iter().filter(|l| l.contains(" -w /work ")).collect();
+        assert!(!main_runs.is_empty());
+        for l in &main_runs {
+            assert!(l.contains("--network none"), "network must be none: {l}");
+            assert!(
+                l.contains(":/work:ro"),
+                "checkout mount must be read-only: {l}"
+            );
+            assert!(
+                l.contains("-e PATH="),
+                "PATH allowlist must be forwarded: {l}"
+            );
+        }
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_live_probe_helpers_report_host_state() {
+        // live_runtime/live_image probe PATH and spawn the runtime binary.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        // live_runtime: env override first, then the probe.
+        let saved_rt = std::env::var(POLYFORGE_SANDBOX_RUNTIME_ENV).ok();
+        std::env::set_var(POLYFORGE_SANDBOX_RUNTIME_ENV, "  pf-explicit-runtime  ");
+        let rt = live_runtime().expect("explicit env override must win");
+        assert_eq!(rt, "pf-explicit-runtime", "override is trimmed");
+        match saved_rt {
+            Some(v) => std::env::set_var(POLYFORGE_SANDBOX_RUNTIME_ENV, v),
+            None => std::env::remove_var(POLYFORGE_SANDBOX_RUNTIME_ENV),
+        }
+
+        // Blank override falls through to the probe (docker/podman or None).
+        let saved_rt = std::env::var(POLYFORGE_SANDBOX_RUNTIME_ENV).ok();
+        std::env::set_var(POLYFORGE_SANDBOX_RUNTIME_ENV, "   ");
+        let probed = live_runtime();
+        match saved_rt {
+            Some(v) => std::env::set_var(POLYFORGE_SANDBOX_RUNTIME_ENV, v),
+            None => std::env::remove_var(POLYFORGE_SANDBOX_RUNTIME_ENV),
+        }
+        if let Some(rt) = probed {
+            assert!(
+                rt == "docker" || rt == "podman",
+                "probe must name a real runtime, got {rt}"
+            );
+        }
+
+        // live_image: the POLYFORGE_SANDBOX_IMAGE_TEST override wins verbatim.
+        let saved_img = std::env::var("POLYFORGE_SANDBOX_IMAGE_TEST").ok();
+        std::env::set_var("POLYFORGE_SANDBOX_IMAGE_TEST", "pf-override-image:v3");
+        let img =
+            live_image("definitely-not-a-runtime-binary").expect("image override must not spawn");
+        assert_eq!(img, "pf-override-image:v3");
+        match saved_img {
+            Some(v) => std::env::set_var("POLYFORGE_SANDBOX_IMAGE_TEST", v),
+            None => std::env::remove_var("POLYFORGE_SANDBOX_IMAGE_TEST"),
+        }
+
+        // run_in_container drives build_run_command end-to-end: through the
+        // fake runtime it proves the argv reaches a spawned process and the
+        // output round-trips, without needing a real image.
+        let (dir, rec) = hermetic_bin_dir("live-probe");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("lp"));
+        let digest = format!("reg.example.com/pf@sha256:{}l", "a".repeat(63));
+        write_fake_docker(
+            &dir,
+            &runtime,
+            &rec,
+            &digest,
+            "0",
+            "sha256:unused",
+            "0",
+            "unused-version",
+            "run-in-container-ok",
+        );
+        let saved = hermetic_push_path(&dir);
+        let out = run_in_container(&runtime, &digest, "/bin/sh", &["-c", "true"]);
+        assert_eq!(out.status.code(), Some(0));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "run-in-container-ok"
+        );
+        let lines = rec_lines(&rec);
+        assert_eq!(lines.len(), 1, "one spawn: {lines:?}");
+        assert!(
+            lines[0].contains(" -w /work "),
+            "mount posture pinned: {lines:?}"
+        );
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_policy_gates_fire_before_any_spawn() {
+        // run() reads PATH for the child env and folds env_fingerprint.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, rec) = hermetic_bin_dir("policy");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("pol"));
+        write_fake_docker(
+            &dir, &runtime, &rec, "sha256:x", "0", "sha256:y", "0", "v", "s",
+        );
+        let saved = hermetic_push_path(&dir);
+
+        let executor = ContainerExecutor::new(runtime.clone(), "pf-hermetic-policy:latest");
+        // Mutating args stay denied BEFORE any spawn.
+        let err = executor
+            .run(&lookup("ruff check").unwrap(), &["--fix".to_string()])
+            .unwrap_err();
+        assert!(matches!(err, RunnerError::InvalidArg { .. }));
+        // Unknown tools are rejected before any spawn.
+        let evil = Tool {
+            name: "evil".into(),
+            bin: std::path::PathBuf::from("evil"),
+            args: vec![],
+        };
+        let err = executor.run(&evil, &[]).unwrap_err();
+        assert!(matches!(err, RunnerError::NotAllowed(n) if n == "evil"));
+        // Proof no spawn happened: the fake never ran, so no REC file exists.
+        assert!(!rec.exists(), "policy gates must fire before any spawn");
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_version_probe_failure_falls_back_to_unknown_bin() {
+        // run() spawns the runtime, reads PATH, and folds env_fingerprint.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, rec) = hermetic_bin_dir("ver-unknown");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("vu"));
+        let image = format!("pf-hermetic-img-{}:latest", hermetic_tag("vu"));
+        let digest = format!("reg.example.com/pf@sha256:{}h", "6".repeat(63));
+        // Empty version_line: the probe branch prints zero bytes, so stdout
+        // is empty and the runner-wide unknown-<bin> fallback must apply.
+        write_fake_docker(
+            &dir,
+            &runtime,
+            &rec,
+            &digest,
+            "0",
+            "sha256:unused",
+            "0",
+            "",
+            "unused-sentinel",
+        );
+        let saved = hermetic_push_path(&dir);
+
+        let executor = ContainerExecutor::new(runtime, image);
+        let t = lookup("cargo --version").expect("tool on allowlist");
+        let out = executor
+            .run(&t, &[])
+            .expect("run with silent version probe");
+        assert_eq!(out.exit_code, 0);
+        assert_eq!(
+            out.tool_version, "unknown-cargo",
+            "empty probe output must fall back"
+        );
+        assert!(
+            !out.env_fingerprint.is_empty(),
+            "fingerprint still recorded"
+        );
+        assert!(rec.exists());
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_run_timeout_kills_sleeping_runtime() {
+        // run() spawns the runtime, mutates PF_TOOL_TIMEOUT_SECS, and folds
+        // env_fingerprint.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (dir, _rec) = hermetic_bin_dir("timeout");
+        let runtime = format!("pf-fake-docker-{}", hermetic_tag("to"));
+        let script = r#"#!/bin/sh
+case "$1" in
+  run)
+    sleep 30
+    ;;
+esac
+exit 0
+"#
+        .to_string();
+        let bin = dir.join(&runtime);
+        std::fs::write(&bin, script).expect("sleeping runtime written");
+        hermetic_make_executable(&bin);
+        let saved = hermetic_push_path(&dir);
+
+        let saved_timeout = std::env::var(PF_TOOL_TIMEOUT_SECS).ok();
+        std::env::set_var(PF_TOOL_TIMEOUT_SECS, "1");
+        // Pre-pinned ref: resolve passes through without spawning.
+        let image = format!("pf-hermetic-img@sha256:{}f", "4".repeat(63));
+        let executor = ContainerExecutor::new(runtime.clone(), image);
+        let t = lookup("cargo --version").expect("tool on allowlist");
+        let err = executor.run(&t, &[]).unwrap_err();
+        match saved_timeout {
+            Some(v) => std::env::set_var(PF_TOOL_TIMEOUT_SECS, v),
+            None => std::env::remove_var(PF_TOOL_TIMEOUT_SECS),
+        }
+        assert!(
+            matches!(err, RunnerError::TimedOut { timeout_secs: 1 }),
+            "sleeping runtime must be killed at the 1s budget: {err:?}"
+        );
+
+        hermetic_restore_path(saved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hermetic_run_spawn_error_names_runtime_and_image() {
+        // run() resolves the runtime via PATH and folds env_fingerprint.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let runtime = format!("definitely-not-a-runtime-binary-{}", hermetic_tag("se"));
+        let image = format!("pf-hermetic-img@sha256:{}g", "5".repeat(63));
+        let executor = ContainerExecutor::new(runtime.clone(), image.clone());
+        let t = lookup("cargo --version").expect("tool on allowlist");
+        let err = executor.run(&t, &[]).unwrap_err();
+        match err {
+            RunnerError::Spawn(msg) => {
+                assert!(
+                    msg.contains("container run failed"),
+                    "names the failure: {msg}"
+                );
+                assert!(msg.contains(&runtime), "names the runtime: {msg}");
+                assert!(msg.contains(&image), "names the image: {msg}");
+            }
+            other => panic!("expected Spawn error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hermetic_from_environment_hard_error_or_wellknown_fallback() {
+        // from_environment probes PATH and mutates POLYFORGE_SANDBOX_* vars.
+        let _spawn_guard = crate::runner::TOOL_SPAWN_LOCK.lock().unwrap();
+        let (empty_dir, _rec) = hermetic_bin_dir("no-runtime");
+        let saved_path = std::env::var("PATH").ok();
+        std::env::set_var("PATH", empty_dir.display().to_string());
+        with_env(Some(""), Some("pf-hermetic-env-img"), || {
+            // find_binary falls back to well-known dirs (/usr/local/bin,
+            // /usr/bin): on hosts with a system docker/podman the probe
+            // legitimately succeeds there, so that arm asserts the fallback
+            // shape instead (the gvisor well-known pattern).
+            let well_known = [
+                "/usr/local/bin/docker",
+                "/usr/bin/docker",
+                "/usr/local/bin/podman",
+                "/usr/bin/podman",
+            ]
+            .iter()
+            .any(|p| std::path::Path::new(p).exists());
+            match ContainerExecutor::from_environment() {
+                Err(e) => {
+                    assert!(
+                        !well_known,
+                        "probe must fail only without well-known runtimes"
+                    );
+                    assert!(
+                        matches!(&e, RunnerError::Spawn(m) if m.contains("no container runtime available")),
+                        "error must name the fix: {e:?}"
+                    );
+                }
+                Ok(exec) => {
+                    assert!(
+                        well_known,
+                        "probe must succeed only with a well-known runtime"
+                    );
+                    assert!(
+                        exec.runtime() == "docker" || exec.runtime() == "podman",
+                        "well-known fallback runtime, got {}",
+                        exec.runtime()
+                    );
+                    assert_eq!(exec.image_ref(), "pf-hermetic-env-img");
+                }
+            }
+        });
+        match saved_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&empty_dir);
     }
 }
