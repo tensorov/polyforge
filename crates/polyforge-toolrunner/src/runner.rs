@@ -147,6 +147,11 @@ pub fn allowlist() -> Vec<Tool> {
             bin: PathBuf::from("gcc"),
             args: vec!["-v".into()],
         },
+        Tool {
+            name: "cargo xtask".into(),
+            bin: PathBuf::from("cargo"),
+            args: vec!["xtask".into()],
+        },
         // Mutation testing: `cargo-mutants` (install: `cargo install
         // cargo-mutants --locked`, v27.1.0). CI installs it via
         // `taiki-e/install-action@v2` with `tool: cargo-mutants`. Typed args
